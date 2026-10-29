@@ -1,0 +1,113 @@
+name: Build desktop packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/build.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+
+permissions:
+  contents: write
+
+env:
+  UV_DEFAULT_INDEX: https://pypi.org/simple
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: macos-14
+            name: macos-arm64
+          # Intel macOS runner. Remove this entry if GitHub retires the label.
+          - os: macos-15-intel
+            name: macos-x64
+    defaults:
+      run:
+        working-directory: cytodesk
+
+    steps:
+      - name: Checkout CytoDesk
+        uses: actions/checkout@v4
+        with:
+          path: cytodesk
+
+      - name: Checkout FlowKit
+        uses: actions/checkout@v4
+        with:
+          repository: whitews/FlowKit
+          ref: master
+          path: FlowKit-master
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "cytodesk/uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group build --python 3.12
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
+
+      - name: Smoke test packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist/CytoDesk/CytoDesk.exe" -ArgumentList "--version" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Packaged CytoDesk failed with exit code $($p.ExitCode)" }
+
+      - name: Smoke test packaged app (macOS)
+        if: runner.os == 'macOS'
+        run: dist/CytoDesk.app/Contents/MacOS/CytoDesk --version
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/CytoDesk/* -DestinationPath "dist/CytoDesk-${{ matrix.name }}.zip"
+
+      - name: Package macOS build
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          ditto -c -k --keepParent CytoDesk.app "CytoDesk-${{ matrix.name }}.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CytoDesk-${{ matrix.name }}
+          path: cytodesk/dist/CytoDesk-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
