@@ -33,31 +33,25 @@ Linux:   dist/CytoDesk/CytoDesk
 
 ## FlowKit 依赖
 
-`pyproject.toml` 中 FlowKit 指向：
+FlowKit 从 PyPI 安装，版本约束位于 `pyproject.toml`：
 
 ```toml
-[tool.uv.sources]
-flowkit = { path = "../FlowKit-master", editable = true }
+dependencies = ["flowkit>=1.3.2,<1.4"]
 ```
 
-因此本地构建时，FlowKit 仓库与 CytoDesk 仓库应当保持同级：
+打包时会使用当前虚拟环境中安装的 FlowKit 版本，并将其代码一并打入
+Windows/macOS 产物。运行打包后的程序不再依赖本地 FlowKit 仓库。
 
-```text
-learn/
-├── cytodesk/
-└── FlowKit-master/
-```
-
-CI 中会同时 checkout 两个仓库到同级目录。
+CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 
 ## 发布工作流
 
 - 手动触发：Actions → **Build desktop packages** → Run workflow
-- 推送 `v*` 标签时自动构建并创建 GitHub Release：
+- 推送 `0.1.0` 或 `v0.1.0` 标签时自动构建并创建 GitHub Release：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag 0.1.0
+git push origin 0.1.0
 ```
 
 构建矩阵：

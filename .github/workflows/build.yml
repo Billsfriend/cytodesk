@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - "v*"
+      - "[0-9]*"
   pull_request:
     paths:
       - "packaging/**"
@@ -42,13 +43,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: cytodesk
-
-      - name: Checkout FlowKit
-        uses: actions/checkout@v4
-        with:
-          repository: whitews/FlowKit
-          ref: master
-          path: FlowKit-master
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5

@@ -28,10 +28,6 @@ build = [
     "pyinstaller>=6.11",
 ]
 
-[tool.uv.sources]
-# FlowKit is developed from the local checkout next to this repository.
-flowkit = { path = "../FlowKit-master", editable = true }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

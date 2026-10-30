@@ -60,18 +60,16 @@ PySide6 + pyqtgraph，分析内核使用 [FlowKit](https://github.com/whitews/fl
 - Linux 桌面环境（当前主要在 Linux 下开发）
 - 依赖由 `uv` 管理
 
-FlowKit 默认从本地 `../FlowKit-master` 以 editable 模式安装，
-配置位于 `pyproject.toml`：
+FlowKit 从 PyPI 安装，版本范围写在 `pyproject.toml`：
 
 ```toml
-[tool.uv.sources]
-flowkit = { path = "../FlowKit-master", editable = true }
+dependencies = ["flowkit>=1.3.2,<1.4"]
 ```
 
-如果需要改用 PyPI 版本，删除该配置并执行：
+如需在本地修改 FlowKit 并调试，可以临时改为 editable 安装：
 
 ```bash
-uv add "flowkit>=1.3.2,<1.4"
+uv add --editable ../FlowKit-master
 ```
 
 ## 快速开始
@@ -164,7 +162,7 @@ sudo apt install libxcb-cursor0
 uv run pytest
 ```
 
-测试使用 FlowKit 仓库中的示例 FCS 数据（默认路径为 `../FlowKit-master/data`），覆盖：
+测试数据仍来自本地 FlowKit 仓库的 `data` 目录（默认 `../FlowKit-master/data`），但运行和打包不依赖该仓库。测试覆盖：
 
 - FCS 加载与通道识别
 - 变换正反算
