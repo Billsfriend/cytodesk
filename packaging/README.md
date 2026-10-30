@@ -11,7 +11,7 @@ PyInstaller 不支持跨平台交叉编译：
 GitHub Actions 工作流会自动在目标系统上构建并上传产物：
 
 ```text
-.github/workflows/build.yml
+.github/workflows/build-desktop.yml
 ```
 
 ## 本地构建
@@ -46,7 +46,7 @@ CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 
 ## 发布工作流
 
-- 手动触发：Actions → **Build desktop packages** → Run workflow
+- 手动触发：Actions → **Build Windows and macOS with PyInstaller** → Run workflow
 - 推送 `0.1.0` 或 `v0.1.0` 标签时自动构建并创建 GitHub Release：
 
 ```bash
@@ -60,7 +60,7 @@ git push origin 0.1.0
 - `macos-14` → `CytoDesk-macos-arm64.zip`
 - `macos-15-intel` → `CytoDesk-macos-x64.zip`
 
-如果 GitHub 停用了某个 macOS runner 标签，修改 `.github/workflows/build.yml` 中的 `matrix.include` 即可。
+如果 GitHub 停用了某个 macOS runner 标签，修改 `.github/workflows/build-desktop.yml` 中的 `matrix.include` 即可。
 
 ## 签名与公证
 

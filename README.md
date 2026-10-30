@@ -191,7 +191,7 @@ uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
 - Windows：`dist/CytoDesk/CytoDesk.exe`
 - macOS：`dist/CytoDesk.app`
 
-推送 `v*` 标签会触发 `.github/workflows/build.yml` 自动构建并发布 GitHub Release。
+推送 `0.1.0` 或 `v0.1.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
 详细说明见 `packaging/README.md`。
 
 ## 当前限制 / 后续计划

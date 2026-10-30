@@ -1,17 +1,13 @@
-name: Build desktop packages
+name: Build Windows and macOS with PyInstaller
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
+      - "0.*"
       - "v*"
-      - "[0-9]*"
-  pull_request:
-    paths:
-      - "packaging/**"
-      - ".github/workflows/build.yml"
-      - "pyproject.toml"
-      - "uv.lock"
 
 permissions:
   contents: write
@@ -19,10 +15,15 @@ permissions:
 env:
   UV_DEFAULT_INDEX: https://pypi.org/simple
 
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -31,24 +32,20 @@ jobs:
             name: windows-x64
           - os: macos-14
             name: macos-arm64
-          # Intel macOS runner. Remove this entry if GitHub retires the label.
+          # Intel macOS runner. If GitHub retires this label, remove this entry
+          # or replace it with another x86_64 macOS runner.
           - os: macos-15-intel
             name: macos-x64
-    defaults:
-      run:
-        working-directory: cytodesk
 
     steps:
-      - name: Checkout CytoDesk
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: cytodesk
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "cytodesk/uv.lock"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install Python
         run: uv python install 3.12
@@ -59,35 +56,45 @@ jobs:
       - name: Build with PyInstaller
         run: uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
 
-      - name: Smoke test packaged app (Windows)
+      - name: Smoke test Windows package
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist/CytoDesk/CytoDesk.exe" -ArgumentList "--version" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Packaged CytoDesk failed with exit code $($p.ExitCode)" }
+          $process = Start-Process `
+            -FilePath "dist/CytoDesk/CytoDesk.exe" `
+            -ArgumentList "--version" `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "CytoDesk.exe failed with exit code $($process.ExitCode)"
+          }
 
-      - name: Smoke test packaged app (macOS)
+      - name: Smoke test macOS package
         if: runner.os == 'macOS'
         run: dist/CytoDesk.app/Contents/MacOS/CytoDesk --version
 
-      - name: Package Windows build
+      - name: Create Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/CytoDesk/* -DestinationPath "dist/CytoDesk-${{ matrix.name }}.zip"
+          Compress-Archive `
+            -Path "dist/CytoDesk/*" `
+            -DestinationPath "dist/CytoDesk-${{ matrix.name }}.zip" `
+            -Force
 
-      - name: Package macOS build
+      - name: Create macOS archive
         if: runner.os == 'macOS'
         run: |
           cd dist
           ditto -c -k --keepParent CytoDesk.app "CytoDesk-${{ matrix.name }}.zip"
 
-      - name: Upload package
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: CytoDesk-${{ matrix.name }}
-          path: cytodesk/dist/CytoDesk-${{ matrix.name }}.zip
+          path: dist/CytoDesk-${{ matrix.name }}.zip
           if-no-files-found: error
+          retention-days: 30
 
   release:
     name: Publish GitHub release
@@ -95,7 +102,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: Download packages
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -105,3 +112,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.zip
+          generate_release_notes: true
