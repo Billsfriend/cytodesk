@@ -3,8 +3,6 @@ name: Build Windows and macOS with PyInstaller
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
       - "0.*"
       - "v*"
