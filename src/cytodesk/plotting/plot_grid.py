@@ -34,6 +34,7 @@ class PlotGrid(QtWidgets.QWidget):
         self._population_mask: np.ndarray | None = None
         self._population_path: tuple[str, ...] | None = None
         self._population_label: str = ""
+        self._overlay_records: list[SampleRecord] | None = None
 
         self._layout = QtWidgets.QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -62,6 +63,8 @@ class PlotGrid(QtWidgets.QWidget):
                     reload=False,
                 )
                 panel.set_record(self._record)
+                if self._overlay_records:
+                    panel.set_overlay_records(self._overlay_records)
         self._columns = columns
         if self.active_panel not in visible:
             self.set_active_panel(visible[0])
@@ -87,6 +90,7 @@ class PlotGrid(QtWidgets.QWidget):
         self._population_mask = None
         self._population_path = None
         self._population_label = ""
+        self._overlay_records = None
         for panel in self.panels:
             panel.session = session
             panel.record = None
@@ -106,6 +110,16 @@ class PlotGrid(QtWidgets.QWidget):
         for panel in self.panels:
             panel.set_population_context(mask, path, label, reload=reload)
 
+    def set_overlay(self, records) -> None:
+        """Enable or disable multi-sample overlay on every panel."""
+
+        records = list(records) if records else None
+        if records is not None and len(records) < 2:
+            records = None
+        self._overlay_records = records
+        for panel in self.panels:
+            panel.set_overlay_records(records)
+
     def set_record(self, record: SampleRecord | None) -> None:
         self._record = record
         for i, panel in enumerate(self.panels):
@@ -115,6 +129,8 @@ class PlotGrid(QtWidgets.QWidget):
                 continue
             self._ensure_channel_pair(panel, i)
             panel.set_record(record)
+            if self._overlay_records:
+                panel.set_overlay_records(self._overlay_records)
 
     def _ensure_channel_pair(self, panel: PlotPanel, index: int, force: bool = False) -> None:
         if self._record is None:

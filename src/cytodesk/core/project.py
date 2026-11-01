@@ -18,7 +18,7 @@ from .transforms import TransformSpec
 
 
 PROJECT_FORMAT = "cytodesk-project"
-PROJECT_VERSION = 1
+PROJECT_VERSION = 2
 PROJECT_JSON_NAME = "project.json"
 
 
@@ -100,13 +100,31 @@ def load_project(path: str | Path) -> LoadedProject:
         if not sample_path.exists():
             missing.append(str(sample_path))
             continue
+        compensation = item.get("compensation")
+        auto_compensate = True
+        if isinstance(compensation, dict):
+            source = str(compensation.get("source") or "fcs")
+            auto_compensate = source == "fcs"
         try:
             try:
-                record = load_sample_file(sample_path, sample_id=sample_id)
+                record = load_sample_file(
+                    sample_path,
+                    sample_id=sample_id,
+                    auto_compensate=auto_compensate,
+                )
             except Exception:
                 # Project files may reference slightly non-compliant FCS files.
-                record = load_sample_file(sample_path, sample_id=sample_id, repair=True)
+                record = load_sample_file(
+                    sample_path,
+                    sample_id=sample_id,
+                    repair=True,
+                    auto_compensate=auto_compensate,
+                )
             session.add_record(record)
+            if isinstance(compensation, dict):
+                comp_error = session.restore_compensation(record, compensation)
+                if comp_error:
+                    errors.append(f"{sample_path}: 补偿矩阵恢复失败: {comp_error}")
         except Exception as exc:  # pragma: no cover - depends on external files
             errors.append(f"{sample_path}: {exc}")
 

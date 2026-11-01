@@ -1,6 +1,6 @@
 [project]
 name = "cytodesk"
-version = "0.1.0"
+version = "0.2.0"
 description = "CytoDesk - a desktop flow cytometry analysis application"
 readme = "README.md"
 requires-python = ">=3.10"

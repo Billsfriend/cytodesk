@@ -27,6 +27,16 @@ from ..core.transforms import TransformSpec, nice_number
 MAX_DISPLAY_POINTS = 300_000
 MAX_HIGHLIGHT_POINTS = 25_000
 CONTOUR_LEVELS = (0.05, 0.10, 0.18, 0.30, 0.45, 0.62)
+OVERLAY_COLORS = (
+    "#2d6cdf",
+    "#d62728",
+    "#2ca02c",
+    "#ff7f0e",
+    "#9467bd",
+    "#17becf",
+    "#8c564b",
+    "#e377c2",
+)
 
 
 class GateTool(str, Enum):
@@ -114,6 +124,11 @@ class PlotPanel(QtWidgets.QWidget):
         self.tool = GateTool.ELLIPSE
         self.show_contours = True
         self.selected_gate_path: tuple[str, ...] | None = None
+        self.overlay_records: list[SampleRecord] | None = None
+        self._overlay_series: list[tuple[str, np.ndarray, np.ndarray]] = []
+        self._overlay_scatter_items: list[pg.ScatterPlotItem] = []
+        self._overlay_hist_items: list[pg.PlotDataItem] = []
+        self._legend = None
         self._gate_percentages: dict[str, float] = {}
 
         self._x = np.empty(0)
@@ -216,7 +231,9 @@ class PlotPanel(QtWidgets.QWidget):
                 self.set_tool(GateTool.RANGE)
         elif self.tool == GateTool.RANGE:
             self.set_tool(GateTool.ELLIPSE)
-        if mode == "density" and len(self._x):
+        if self.overlay_records and len(self._x):
+            self._render_overlay_events()
+        elif mode == "density" and len(self._x):
             self._render_density()
         elif mode == "histogram" and len(self._x):
             self._render_histogram()
@@ -257,6 +274,28 @@ class PlotPanel(QtWidgets.QWidget):
             self._update_axes()
             self.refresh_gates()
 
+    def set_overlay_records(self, records) -> None:
+        """Show several samples on the same axes (``None`` disables overlay)."""
+
+        records = list(records) if records else None
+        if records is not None and len(records) < 2:
+            records = None
+        self.overlay_records = records
+        if records is not None:
+            self._population_mask = None
+            self._population_path = None
+            self._population_label = f"叠加 {len(records)} 个样本"
+            self.selected_gate_path = None
+            self._highlight.setData([], [])
+        else:
+            self._population_label = ""
+        self._overlay_series = []
+        self._clear_overlay_items()
+        if self.record is not None and self.x_channel and self.y_channel:
+            self._load_events()
+            self._update_axes()
+        self.refresh_gates()
+
     def set_channels(self, x_channel: str | None, y_channel: str | None) -> None:
         self.x_channel = x_channel
         self.y_channel = y_channel
@@ -274,6 +313,7 @@ class PlotPanel(QtWidgets.QWidget):
             self._hist_edges = None
             self._density.setVisible(False)
             self._clear_contours()
+            self._clear_overlay_items()
             self._empty_label.setVisible(True)
         self.refresh_gates()
 
@@ -281,6 +321,9 @@ class PlotPanel(QtWidgets.QWidget):
         self.record = record
         self.selected_gate_path = None
         if record is None:
+            self.overlay_records = None
+            self._overlay_series = []
+            self._clear_overlay_items()
             self._x = np.empty(0)
             self._y = np.empty(0)
             self._display_idx = np.empty(0, dtype=int)
@@ -326,6 +369,9 @@ class PlotPanel(QtWidgets.QWidget):
 
     def clear(self) -> None:
         self.record = None
+        self.overlay_records = None
+        self._overlay_series = []
+        self._clear_overlay_items()
         self._x = np.empty(0)
         self._y = np.empty(0)
         self._view_indices = None
@@ -368,6 +414,42 @@ class PlotPanel(QtWidgets.QWidget):
     def _load_events(self) -> None:
         if self.record is None or not self.x_channel or not self.y_channel:
             return
+        if self.overlay_records:
+            series: list[tuple[str, np.ndarray, np.ndarray]] = []
+            for record in self.overlay_records:
+                available = {channel.pnn for channel in record.channels}
+                if self.x_channel not in available or self.y_channel not in available:
+                    continue
+                try:
+                    matrix, _ = self.session.transformed_matrix(
+                        record, [self.x_channel, self.y_channel]
+                    )
+                except Exception:
+                    continue
+                series.append(
+                    (
+                        record.id,
+                        np.asarray(matrix[self.x_channel], dtype=float),
+                        np.asarray(matrix[self.y_channel], dtype=float),
+                    )
+                )
+            self._overlay_series = series
+            if series:
+                x = np.concatenate([item[1] for item in series])
+                y = np.concatenate([item[2] for item in series])
+            else:
+                x = np.empty(0)
+                y = np.empty(0)
+            self._view_indices = None
+            self._x, self._y = x, y
+            self._display_idx = _subsample_indices(len(x), MAX_DISPLAY_POINTS)
+            self._x_bounds, self._y_bounds = self._compute_bounds(x, y)
+            self._empty_label.setVisible(len(x) == 0)
+            self._render_events()
+            self._set_view_bounds()
+            return
+
+        self._overlay_series = []
         try:
             matrix, _ = self.session.transformed_matrix(
                 self.record, [self.x_channel, self.y_channel]
@@ -420,8 +502,13 @@ class PlotPanel(QtWidgets.QWidget):
             self._hist_counts = None
             self._hist_edges = None
             self._clear_contours()
+            self._clear_overlay_items()
             self._empty_label.setVisible(True)
             return
+        if self.overlay_records:
+            self._render_overlay_events()
+            return
+        self._clear_overlay_items()
         idx = self._display_idx
         self._scatter.setData(x=self._x[idx], y=self._y[idx])
         if self.mode == "density":
@@ -432,6 +519,99 @@ class PlotPanel(QtWidgets.QWidget):
         else:
             self._clear_contours()
         self._update_visibility()
+
+    def _clear_legend(self) -> None:
+        if self._legend is None:
+            return
+        try:
+            self._legend.clear()
+            self.plot_item.vb.removeItem(self._legend)
+        except Exception:
+            pass
+        self._legend = None
+        self.plot_item.legend = None
+
+    def _clear_overlay_items(self) -> None:
+        for item in self._overlay_scatter_items:
+            try:
+                self.plot_item.removeItem(item)
+            except Exception:
+                pass
+        self._overlay_scatter_items.clear()
+        for item in self._overlay_hist_items:
+            try:
+                self.plot_item.removeItem(item)
+            except Exception:
+                pass
+        self._overlay_hist_items.clear()
+        self._clear_legend()
+
+    def _render_overlay_events(self) -> None:
+        self._clear_overlay_items()
+        self._scatter.setData([], [])
+        if not self._overlay_series:
+            self._density.setVisible(False)
+            self._histogram.setVisible(False)
+            self._clear_contours()
+            return
+        if self.mode == "density":
+            self._render_density()
+        elif self.mode == "histogram":
+            self._clear_contours()
+            self._render_overlay_histogram()
+        else:
+            self._clear_contours()
+            self._render_overlay_scatter()
+        self._update_visibility()
+
+    def _render_overlay_scatter(self) -> None:
+        total = sum(len(item[1]) for item in self._overlay_series)
+        self._legend = self.plot_item.addLegend(offset=(8, 8))
+        self._legend.setLabelTextColor("#333333")
+        for index, (sample_id, x, y) in enumerate(self._overlay_series):
+            if total > MAX_DISPLAY_POINTS:
+                limit = max(500, int(MAX_DISPLAY_POINTS * len(x) / max(total, 1)))
+            else:
+                limit = len(x)
+            idx = _subsample_indices(len(x), limit, seed=101 + index)
+            color = OVERLAY_COLORS[index % len(OVERLAY_COLORS)]
+            item = pg.ScatterPlotItem(
+                size=2.0,
+                pen=None,
+                brush=pg.mkBrush(_qcolor(color, 70)),
+                pxMode=True,
+                antialias=False,
+            )
+            item.setData(x=x[idx], y=y[idx])
+            item.setZValue(1)
+            self.plot_item.addItem(item, ignoreBounds=True)
+            self._overlay_scatter_items.append(item)
+            self._legend.addItem(item, sample_id)
+
+    def _render_overlay_histogram(self) -> None:
+        x0, x1 = self._x_bounds
+        bins = min(512, max(32, int(np.sqrt(max(len(self._x), 1)))))
+        edges = np.linspace(x0, x1, bins + 1)
+        self._hist_edges = edges
+        max_counts = np.zeros(bins, dtype=float)
+        self._legend = self.plot_item.addLegend(offset=(8, 8))
+        self._legend.setLabelTextColor("#333333")
+        for index, (sample_id, x, _y) in enumerate(self._overlay_series):
+            counts, _ = np.histogram(x, bins=edges)
+            max_counts = np.maximum(max_counts, counts)
+            color = OVERLAY_COLORS[index % len(OVERLAY_COLORS)]
+            item = pg.PlotDataItem(
+                x=edges,
+                y=counts,
+                stepMode="center",
+                pen=pg.mkPen(color, width=1.5),
+                name=sample_id,
+            )
+            item.setZValue(2)
+            self.plot_item.addItem(item, ignoreBounds=True)
+            self._overlay_hist_items.append(item)
+        self._hist_counts = max_counts
+        self._histogram.setVisible(False)
 
     def _render_histogram(self) -> None:
         if len(self._x) == 0:
@@ -572,10 +752,19 @@ class PlotPanel(QtWidgets.QWidget):
     def _update_visibility(self) -> None:
         show_density = self.mode == "density"
         show_histogram = self.mode == "histogram"
-        self._density.setVisible(show_density and len(self._x) > 0)
-        self._scatter.setVisible(not show_density and not show_histogram and len(self._x) > 0)
-        self._histogram.setVisible(show_histogram and len(self._x) > 0)
-        self._empty_label.setVisible(len(self._x) == 0)
+        has_data = len(self._x) > 0
+        self._density.setVisible(show_density and has_data)
+        if self.overlay_records:
+            self._scatter.setVisible(False)
+            for item in self._overlay_scatter_items:
+                item.setVisible(not show_density and not show_histogram and has_data)
+            for item in self._overlay_hist_items:
+                item.setVisible(show_histogram and has_data)
+            self._histogram.setVisible(False)
+        else:
+            self._scatter.setVisible(not show_density and not show_histogram and has_data)
+            self._histogram.setVisible(show_histogram and has_data)
+        self._empty_label.setVisible(not has_data)
 
     def _set_view_bounds(self) -> None:
         x0, x1 = self._x_bounds
@@ -608,11 +797,15 @@ class PlotPanel(QtWidgets.QWidget):
             self.plot_item.setLabel("left", f"{label} · {yspec.label}")
         if self.record:
             event_count = len(self._x)
-            label = self._population_label or self.record.id
-            if self.mode in {"scatter", "density"} and event_count > MAX_DISPLAY_POINTS:
-                detail = f"显示 {MAX_DISPLAY_POINTS:,} / {event_count:,} 事件"
+            if self.overlay_records:
+                label = f"叠加 {len(self._overlay_series)} 个样本"
+                detail = f"共 {event_count:,} 事件"
             else:
-                detail = f"{event_count:,} 事件"
+                label = self._population_label or self.record.id
+                if self.mode in {"scatter", "density"} and event_count > MAX_DISPLAY_POINTS:
+                    detail = f"显示 {MAX_DISPLAY_POINTS:,} / {event_count:,} 事件"
+                else:
+                    detail = f"{event_count:,} 事件"
             self.plot_item.setTitle(
                 f"<span style='color:#333;font-size:10pt'>{label}"
                 f" &nbsp;·&nbsp; {detail}</span>"
@@ -751,6 +944,7 @@ class PlotPanel(QtWidgets.QWidget):
     def _update_highlight(self) -> None:
         if (
             self.record is None
+            or self.overlay_records
             or self.selected_gate_path is None
             or len(self._x) == 0
             or self.mode in {"histogram", "density"}

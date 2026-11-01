@@ -143,6 +143,7 @@ class InspectorPanel(QtWidgets.QWidget):
     contours_changed = QtCore.Signal(bool)
     gate_name_changed = QtCore.Signal(object, str)
     gate_color_changed = QtCore.Signal(object, str)
+    compensation_edit_requested = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -167,9 +168,17 @@ class InspectorPanel(QtWidgets.QWidget):
         self.path_label = QtWidgets.QLabel("—")
         self.path_label.setWordWrap(True)
         self.path_label.setStyleSheet("color:#666; font-size:9pt;")
+        self.comp_button = QtWidgets.QPushButton("编辑…")
+        self.comp_button.setToolTip("查看、导入或编辑补偿矩阵")
+        self.comp_button.clicked.connect(self.compensation_edit_requested)
+        comp_row = QtWidgets.QHBoxLayout()
+        comp_row.setContentsMargins(0, 0, 0, 0)
+        comp_row.setSpacing(4)
+        comp_row.addWidget(self.comp_label, 1)
+        comp_row.addWidget(self.comp_button)
         sample_form.addRow("名称", self.sample_label)
         sample_form.addRow("事件数", self.events_label)
-        sample_form.addRow("补偿", self.comp_label)
+        sample_form.addRow("补偿", comp_row)
         sample_form.addRow("文件", self.path_label)
         layout.addWidget(sample_group)
 
@@ -256,6 +265,8 @@ class InspectorPanel(QtWidgets.QWidget):
             self.sample_label.setText("—")
             self.events_label.setText("—")
             self.comp_label.setText("—")
+            self.comp_label.setStyleSheet("")
+            self.comp_label.setToolTip("")
             self.path_label.setText("—")
             self.x_combo.clear()
             self.y_combo.clear()
@@ -268,9 +279,13 @@ class InspectorPanel(QtWidgets.QWidget):
         self.sample_label.setText(record.id)
         self.events_label.setText(f"{record.event_count:,}")
         if getattr(record.sample, "compensation", None) is not None:
-            self.comp_label.setText("FCS 自动补偿")
+            if record.compensation_source == "custom":
+                self.comp_label.setText("自定义矩阵")
+                self.comp_label.setToolTip("已应用用户编辑的补偿矩阵")
+            else:
+                self.comp_label.setText("FCS 自动补偿")
+                self.comp_label.setToolTip("已应用 FCS 文件内嵌的 $SPILLOVER 矩阵")
             self.comp_label.setStyleSheet("color:#1a7f37;")
-            self.comp_label.setToolTip("已应用 FCS 文件内嵌的 $SPILLOVER 矩阵")
         elif record.compensation_error:
             self.comp_label.setText("FCS 补偿失败")
             self.comp_label.setStyleSheet("color:#b42318;")
