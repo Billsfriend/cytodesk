@@ -642,11 +642,12 @@ def test_batch_gating_and_overlay(qtbot):
     assert window._overlay_enabled
     assert len(panel._overlay_series) == 2
     assert panel.overlay_records is not None
+    assert "叠加样本" in panel.plot_item.titleLabel.text
+    assert len(panel._overlay_scatter_items) == 1
     window.set_mode("histogram")
-    assert len(panel._overlay_hist_items) == 2
-    assert panel._legend is not None
+    assert len(panel._overlay_hist_items) == 1
     window.set_mode("scatter")
-    assert len(panel._overlay_scatter_items) == 2
+    assert len(panel._overlay_scatter_items) == 1
     window.set_overlay(False)
     assert panel.overlay_records is None
 

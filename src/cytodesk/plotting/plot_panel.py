@@ -27,18 +27,6 @@ from ..core.transforms import TransformSpec, nice_number
 MAX_DISPLAY_POINTS = 300_000
 MAX_HIGHLIGHT_POINTS = 25_000
 CONTOUR_LEVELS = (0.05, 0.10, 0.18, 0.30, 0.45, 0.62)
-OVERLAY_COLORS = (
-    "#2d6cdf",
-    "#d62728",
-    "#2ca02c",
-    "#ff7f0e",
-    "#9467bd",
-    "#17becf",
-    "#8c564b",
-    "#e377c2",
-)
-
-
 class GateTool(str, Enum):
     RECTANGLE = "rectangle"
     POLYGON = "polygon"
@@ -128,7 +116,6 @@ class PlotPanel(QtWidgets.QWidget):
         self._overlay_series: list[tuple[str, np.ndarray, np.ndarray]] = []
         self._overlay_scatter_items: list[pg.ScatterPlotItem] = []
         self._overlay_hist_items: list[pg.PlotDataItem] = []
-        self._legend = None
         self._gate_percentages: dict[str, float] = {}
 
         self._x = np.empty(0)
@@ -284,7 +271,7 @@ class PlotPanel(QtWidgets.QWidget):
         if records is not None:
             self._population_mask = None
             self._population_path = None
-            self._population_label = f"叠加 {len(records)} 个样本"
+            self._population_label = "叠加样本"
             self.selected_gate_path = None
             self._highlight.setData([], [])
         else:
@@ -520,17 +507,6 @@ class PlotPanel(QtWidgets.QWidget):
             self._clear_contours()
         self._update_visibility()
 
-    def _clear_legend(self) -> None:
-        if self._legend is None:
-            return
-        try:
-            self._legend.clear()
-            self.plot_item.vb.removeItem(self._legend)
-        except Exception:
-            pass
-        self._legend = None
-        self.plot_item.legend = None
-
     def _clear_overlay_items(self) -> None:
         for item in self._overlay_scatter_items:
             try:
@@ -544,7 +520,6 @@ class PlotPanel(QtWidgets.QWidget):
             except Exception:
                 pass
         self._overlay_hist_items.clear()
-        self._clear_legend()
 
     def _render_overlay_events(self) -> None:
         self._clear_overlay_items()
@@ -565,52 +540,40 @@ class PlotPanel(QtWidgets.QWidget):
         self._update_visibility()
 
     def _render_overlay_scatter(self) -> None:
-        total = sum(len(item[1]) for item in self._overlay_series)
-        self._legend = self.plot_item.addLegend(offset=(8, 8))
-        self._legend.setLabelTextColor("#333333")
-        for index, (sample_id, x, y) in enumerate(self._overlay_series):
-            if total > MAX_DISPLAY_POINTS:
-                limit = max(500, int(MAX_DISPLAY_POINTS * len(x) / max(total, 1)))
-            else:
-                limit = len(x)
-            idx = _subsample_indices(len(x), limit, seed=101 + index)
-            color = OVERLAY_COLORS[index % len(OVERLAY_COLORS)]
-            item = pg.ScatterPlotItem(
-                size=2.0,
-                pen=None,
-                brush=pg.mkBrush(_qcolor(color, 70)),
-                pxMode=True,
-                antialias=False,
-            )
-            item.setData(x=x[idx], y=y[idx])
-            item.setZValue(1)
-            self.plot_item.addItem(item, ignoreBounds=True)
-            self._overlay_scatter_items.append(item)
-            self._legend.addItem(item, sample_id)
+        if len(self._x) == 0:
+            return
+        idx = self._display_idx
+        item = pg.ScatterPlotItem(
+            size=2.0,
+            pen=None,
+            brush=pg.mkBrush(35, 35, 35, 60),
+            pxMode=True,
+            antialias=False,
+        )
+        item.setData(x=self._x[idx], y=self._y[idx])
+        item.setZValue(1)
+        self.plot_item.addItem(item, ignoreBounds=True)
+        self._overlay_scatter_items.append(item)
 
     def _render_overlay_histogram(self) -> None:
+        if len(self._x) == 0:
+            return
         x0, x1 = self._x_bounds
-        bins = min(512, max(32, int(np.sqrt(max(len(self._x), 1)))))
-        edges = np.linspace(x0, x1, bins + 1)
+        bins = min(512, max(32, int(np.sqrt(len(self._x)))))
+        counts, edges = np.histogram(self._x, bins=bins, range=(x0, x1))
         self._hist_edges = edges
-        max_counts = np.zeros(bins, dtype=float)
-        self._legend = self.plot_item.addLegend(offset=(8, 8))
-        self._legend.setLabelTextColor("#333333")
-        for index, (sample_id, x, _y) in enumerate(self._overlay_series):
-            counts, _ = np.histogram(x, bins=edges)
-            max_counts = np.maximum(max_counts, counts)
-            color = OVERLAY_COLORS[index % len(OVERLAY_COLORS)]
-            item = pg.PlotDataItem(
-                x=edges,
-                y=counts,
-                stepMode="center",
-                pen=pg.mkPen(color, width=1.5),
-                name=sample_id,
-            )
-            item.setZValue(2)
-            self.plot_item.addItem(item, ignoreBounds=True)
-            self._overlay_hist_items.append(item)
-        self._hist_counts = max_counts
+        self._hist_counts = counts
+        item = pg.PlotDataItem(
+            x=edges,
+            y=counts,
+            stepMode="center",
+            fillLevel=0.0,
+            brush=pg.mkBrush(45, 110, 200, 80),
+            pen=pg.mkPen("#2d6cdf", width=1.2),
+        )
+        item.setZValue(2)
+        self.plot_item.addItem(item, ignoreBounds=True)
+        self._overlay_hist_items.append(item)
         self._histogram.setVisible(False)
 
     def _render_histogram(self) -> None:
@@ -798,17 +761,16 @@ class PlotPanel(QtWidgets.QWidget):
         if self.record:
             event_count = len(self._x)
             if self.overlay_records:
-                label = f"叠加 {len(self._overlay_series)} 个样本"
-                detail = f"共 {event_count:,} 事件"
+                title = "叠加样本"
             else:
                 label = self._population_label or self.record.id
                 if self.mode in {"scatter", "density"} and event_count > MAX_DISPLAY_POINTS:
                     detail = f"显示 {MAX_DISPLAY_POINTS:,} / {event_count:,} 事件"
                 else:
                     detail = f"{event_count:,} 事件"
+                title = f"{label} &nbsp;·&nbsp; {detail}"
             self.plot_item.setTitle(
-                f"<span style='color:#333;font-size:10pt'>{label}"
-                f" &nbsp;·&nbsp; {detail}</span>"
+                f"<span style='color:#333;font-size:10pt'>{title}</span>"
             )
 
     def _on_range_changed(self, *_args) -> None:
