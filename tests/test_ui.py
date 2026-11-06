@@ -568,13 +568,17 @@ def test_compensation_dialog_apply(qtbot):
 
     dialog = CompensationDialog(window.session, record, window)
     qtbot.addWidget(dialog)
-    assert dialog.table.rowCount() == len(dialog.detectors)
+    detector_count = len(dialog.detectors)
+    assert dialog.table.rowCount() == detector_count
+    assert len(dialog._preview_scatter_cells) == detector_count * (detector_count - 1) // 2
+    assert len(dialog._preview_hist_cells) == detector_count
     dialog._update_preview()
-    assert len(dialog._preview_fg.data) > 0
-    before = np.asarray([point[0] for point in dialog._preview_fg.data[:50]])
+    cell = dialog._preview_scatter_cells[(1, 0)]
+    assert len(cell.comp_item.data) > 0
+    before = np.asarray([point[0] for point in cell.comp_item.data[:50]])
     dialog.table.item(0, 1).setText("0.2")
-    dialog._update_preview()
-    after = np.asarray([point[0] for point in dialog._preview_fg.data[:50]])
+    qtbot.wait(250)
+    after = np.asarray([point[0] for point in cell.comp_item.data[:50]])
     assert np.max(np.abs(before - after)) > 1e-9
 
     dialog._apply_matrix()
