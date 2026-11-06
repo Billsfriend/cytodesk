@@ -8,14 +8,8 @@ from cytodesk.ui.main_window import MainWindow
 
 LEARN_DIR = Path(__file__).resolve().parents[2]
 FCS_PATH = LEARN_DIR / "FlowKit-master" / "data" / "test_data_2d_01.fcs"
-COMP_FCS_PATH = (
-    LEARN_DIR
-    / "FlowKit-master"
-    / "data"
-    / "8_color_data_set"
-    / "fcs_files"
-    / "101_DEN084Y5_15_E01_008_clean.fcs"
-)
+FCS_DIR = LEARN_DIR / "FlowKit-master" / "data" / "8_color_data_set" / "fcs_files"
+COMP_FCS_PATH = FCS_DIR / "101_DEN084Y5_15_E01_008_clean.fcs"
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +36,7 @@ def test_window_activate_sample(qtbot):
     qtbot.addWidget(window)
     record = load_sample_file(FCS_PATH)
     window.session.add_record(record)
-    window.sample_panel.refresh()
+    window.gate_tree.refresh()
     window.activate_sample(record.id)
     assert window.current_sample_id == record.id
     assert window.plot_grid.active().x_channel is not None
@@ -557,3 +551,127 @@ def test_density_image_orientation(qtbot):
     assert abs(image_y_mode - data_y_mode) <= 4
     window._set_dirty(False)
 
+
+
+@pytest.mark.skipif(not COMP_FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_compensation_dialog_apply(qtbot):
+    import numpy as np
+
+    from cytodesk.core.compensation import compensation_info
+    from cytodesk.ui.compensation_dialog import CompensationDialog
+
+    record = load_sample_file(COMP_FCS_PATH)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+
+    dialog = CompensationDialog(window.session, record, window)
+    qtbot.addWidget(dialog)
+    assert dialog.table.rowCount() == len(dialog.detectors)
+    dialog._update_preview()
+    assert len(dialog._preview_fg.data) > 0
+    before = np.asarray([point[0] for point in dialog._preview_fg.data[:50]])
+    dialog.table.item(0, 1).setText("0.2")
+    dialog._update_preview()
+    after = np.asarray([point[0] for point in dialog._preview_fg.data[:50]])
+    assert np.max(np.abs(before - after)) > 1e-9
+
+    dialog._apply_matrix()
+    assert dialog.applied
+    assert record.compensation_source == "custom"
+    assert compensation_info(record).matrix[0, 1] == pytest.approx(0.2)
+    dialog._clear_compensation()
+    assert record.compensation_source is None
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_DIR.exists(), reason="FlowKit example data not available")
+def test_batch_gating_and_overlay(qtbot):
+    import numpy as np
+
+    from cytodesk.core.gates import make_rectangle_gate
+
+    files = sorted(FCS_DIR.glob("*.fcs"))[:2]
+    if len(files) < 2:
+        pytest.skip("需要两个 FlowKit 示例样本")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    for path in files:
+        window.session.add_record(load_sample_file(path))
+    first_id = next(iter(window.session.samples))
+    window.activate_sample(first_id)
+    record = window.session.get_sample(first_id)
+    panel = window.plot_grid.active()
+    x_channel, y_channel = panel.x_channel, panel.y_channel
+    matrix, _ = window.session.transformed_matrix(record, [x_channel, y_channel])
+    x0, x1 = np.percentile(matrix[x_channel], [25, 75])
+    y0, y1 = np.percentile(matrix[y_channel], [25, 75])
+    gate = make_rectangle_gate(
+        "Batch",
+        x_channel,
+        y_channel,
+        (float(x0), float(x1)),
+        (float(y0), float(y1)),
+        window.session.get_transform_id(x_channel),
+        window.session.get_transform_id(y_channel),
+    )
+    window.session.add_gate(gate, ("root",))
+    window.run_batch_gating()
+
+    assert window._batch_gated
+    assert len(window.session.gated_sample_ids()) == 2
+    assert window.batch_stats_table.table.rowCount() == 2
+    assert all("已门控" in status for status in window.gate_tree._status_by_id.values())
+
+    root = window.gate_tree.tree.topLevelItem(0)
+    assert root.text(0) == "Root"
+    assert root.childCount() == 2
+    for i in range(root.childCount()):
+        sample_item = root.child(i)
+        assert sample_item.childCount() == 1
+        assert sample_item.child(0).text(2) != ""
+
+    window.set_overlay(True)
+    assert window._overlay_enabled
+    assert len(panel._overlay_series) == 2
+    assert panel.overlay_records is not None
+    window.set_mode("histogram")
+    assert len(panel._overlay_hist_items) == 2
+    assert panel._legend is not None
+    window.set_mode("scatter")
+    assert len(panel._overlay_scatter_items) == 2
+    window.set_overlay(False)
+    assert panel.overlay_records is None
+
+    other_sample = root.child(1)
+    other_sample_id = other_sample.text(0)
+    window.gate_tree._on_item_clicked(other_sample.child(0), 0)
+    assert window.current_sample_id == other_sample_id
+    assert window.selected_gate_path == ("root", "Batch")
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_DIR.exists(), reason="FlowKit example data not available")
+def test_compensation_dialog_apply_all(qtbot):
+    from cytodesk.core.compensation import compensation_info
+    from cytodesk.ui.compensation_dialog import CompensationDialog
+
+    files = sorted(FCS_DIR.glob("*.fcs"))[:2]
+    if len(files) < 2:
+        pytest.skip("需要两个 FlowKit 示例样本")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    records = [window.session.add_record(load_sample_file(path)) for path in files]
+    dialog = CompensationDialog(window.session, records[0], window)
+    qtbot.addWidget(dialog)
+    dialog.all_check.setChecked(True)
+    dialog.table.item(0, 1).setText("0.17")
+    dialog._apply_matrix()
+    assert dialog.applied
+    for record in records:
+        assert record.compensation_source == "custom"
+        assert compensation_info(record).matrix[0, 1] == pytest.approx(0.17)
+    window._set_dirty(False)

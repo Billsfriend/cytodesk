@@ -11,10 +11,18 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 import numpy as np
-from flowkit import GatingStrategy, Matrix, Sample
+from flowkit import GatingStrategy, Sample
 from flowkit import gates as fk_gates
 
 from .channels import ChannelInfo, channels_from_sample
+from .compensation import (
+    apply_custom_compensation,
+    apply_embedded_compensation,
+    clear_compensation,
+    compensation_info,
+    compensation_payload,
+    restore_compensation,
+)
 from .gates import (
     gate_dimension_ids,
     gate_from_dict,
@@ -48,6 +56,7 @@ class SampleRecord:
     sample: Sample
     channels: list[ChannelInfo] = field(default_factory=list)
     compensation_error: str | None = None
+    compensation_source: str | None = None
 
     def __post_init__(self) -> None:
         if not self.channels:
@@ -83,6 +92,33 @@ class PopulationStat:
         return " / ".join(self.full_path[1:]) if len(self.full_path) > 1 else self.gate_name
 
 
+@dataclass
+class BatchPopulationStat(PopulationStat):
+    """A population statistic belonging to one sample in a batch analysis."""
+
+    sample_id: str = ""
+    sample_total: int = 0
+
+
+@dataclass
+class SampleGatingStatus:
+    """Outcome of applying the shared gating strategy to one sample."""
+
+    sample_id: str
+    ok: bool
+    error: str | None = None
+    missing_channels: tuple[str, ...] = ()
+
+    @property
+    def missing_label(self) -> str:
+        if not self.missing_channels:
+            return ""
+        preview = ", ".join(self.missing_channels[:5])
+        if len(self.missing_channels) > 5:
+            preview += " …"
+        return preview
+
+
 def load_sample_file(
     path: str | Path,
     sample_id: str | None = None,
@@ -104,33 +140,16 @@ def load_sample_file(
         ignore_offset_discrepancy=repair,
         use_header_offsets=repair,
     )
-    comp_error = None
-    if auto_compensate:
-        metadata = getattr(sample, "metadata", {}) or {}
-        spill = None
-        for key in ("spillover", "spill", "$SPILLOVER", "$SPILL"):
-            if metadata.get(key):
-                spill = metadata[key]
-                break
-        if spill:
-            try:
-                detectors = [sample.pnn_labels[i] for i in sample.fluoro_indices]
-                fluorochromes = [sample.pns_labels[i] for i in sample.fluoro_indices]
-                matrix = Matrix(
-                    spill,
-                    detectors,
-                    fluorochromes,
-                    null_channels=sample.null_channels,
-                )
-                sample.apply_compensation(matrix)
-            except Exception as exc:
-                comp_error = str(exc)
-    return SampleRecord(
+    record = SampleRecord(
         id=sample.id,
         path=path,
         sample=sample,
-        compensation_error=comp_error,
     )
+    if auto_compensate:
+        # Missing embedded matrices are normal; errors are kept on the record
+        # for the inspector but do not prevent loading the sample.
+        apply_embedded_compensation(record)
+    return record
 
 
 def record_has_compensation(record: SampleRecord) -> bool:
@@ -147,6 +166,7 @@ class AnalysisSession:
         self.transform_ids: dict[str, str] = {}
         self.gate_colors: dict[str, str] = {}
         self._results: dict[str, object] = {}
+        self._gating_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Samples
@@ -171,6 +191,7 @@ class AnalysisSession:
     def remove_sample(self, sample_id: str) -> None:
         self.samples.pop(sample_id, None)
         self._results.pop(sample_id, None)
+        self._gating_errors.pop(sample_id, None)
 
     def _unique_sample_id(self, base: str) -> str:
         base = (base or "sample").strip() or "sample"
@@ -187,6 +208,39 @@ class AnalysisSession:
     def channel_info(self, sample_id: str, pnn: str) -> ChannelInfo | None:
         record = self.samples.get(sample_id)
         return record.channel(pnn) if record else None
+
+    # ------------------------------------------------------------------
+    # Compensation
+    # ------------------------------------------------------------------
+    def compensation_info(self, record: SampleRecord):
+        return compensation_info(record)
+
+    def apply_compensation(
+        self,
+        record: SampleRecord,
+        detectors: Iterable[str],
+        matrix: np.ndarray,
+        fluorochromes: Iterable[str] | None = None,
+    ) -> None:
+        apply_custom_compensation(record, detectors, matrix, fluorochromes)
+        self.invalidate_results()
+
+    def apply_fcs_compensation(self, record: SampleRecord) -> str | None:
+        error = apply_embedded_compensation(record)
+        self.invalidate_results()
+        return error
+
+    def clear_compensation(self, record: SampleRecord) -> None:
+        clear_compensation(record)
+        self.invalidate_results()
+
+    def restore_compensation(self, record: SampleRecord, payload: dict | None) -> str | None:
+        error = restore_compensation(record, payload)
+        self.invalidate_results()
+        return error
+
+    def compensation_payload(self, record: SampleRecord) -> dict | None:
+        return compensation_payload(record)
 
     # ------------------------------------------------------------------
     # Transforms
@@ -402,18 +456,80 @@ class AnalysisSession:
     # ------------------------------------------------------------------
     def invalidate_results(self) -> None:
         self._results.clear()
+        self._gating_errors.clear()
         try:
             self.gating_strategy.clear_cache()
         except Exception:
             pass
 
-    def gate_sample(self, record: SampleRecord, cache: bool = True):
+    def gate_sample(self, record: SampleRecord, cache: bool = False):
         results = self.gating_strategy.gate_sample(record.sample, cache_events=cache)
         self._results[record.id] = results
+        self._gating_errors.pop(record.id, None)
         return results
 
     def results_for(self, record: SampleRecord):
         return self._results.get(record.id)
+
+    def gating_error(self, sample_id: str) -> str | None:
+        return self._gating_errors.get(sample_id)
+
+    def gated_sample_ids(self) -> set[str]:
+        return {
+            sample_id
+            for sample_id in self._results
+            if sample_id in self.samples
+        }
+
+    def gate_all(
+        self,
+        records: Iterable[SampleRecord] | None = None,
+        cache: bool = False,
+    ) -> list[SampleGatingStatus]:
+        """Apply the shared gating strategy to several samples.
+
+        Samples with missing gate channels are reported in the returned
+        statuses instead of aborting the whole batch.  Previously computed
+        results are replaced for every sample.
+        """
+
+        records = list(self.samples.values()) if records is None else list(records)
+        statuses: list[SampleGatingStatus] = []
+        if not self.has_gates():
+            for record in records:
+                self._results.pop(record.id, None)
+                self._gating_errors.pop(record.id, None)
+                statuses.append(SampleGatingStatus(record.id, True))
+            return statuses
+
+        for record in records:
+            missing = tuple(self.missing_gate_channels(record))
+            if missing:
+                self._results.pop(record.id, None)
+                message = f"缺少门所需通道：{', '.join(missing[:5])}"
+                if len(missing) > 5:
+                    message += " …"
+                self._gating_errors[record.id] = message
+                statuses.append(
+                    SampleGatingStatus(
+                        record.id,
+                        False,
+                        error=message,
+                        missing_channels=missing,
+                    )
+                )
+                continue
+            try:
+                self.gate_sample(record, cache=cache)
+            except Exception as exc:  # pragma: no cover - file dependent
+                self._results.pop(record.id, None)
+                self._gating_errors[record.id] = str(exc)
+                statuses.append(
+                    SampleGatingStatus(record.id, False, error=str(exc))
+                )
+            else:
+                statuses.append(SampleGatingStatus(record.id, True))
+        return statuses
 
     def gate_membership(self, record: SampleRecord, full_path: tuple[str, ...]):
         results = self._results.get(record.id)
@@ -490,6 +606,61 @@ class AnalysisSession:
             )
         return rows
 
+    def population_counts(self, record: SampleRecord) -> dict[str, int]:
+        """Return ``path -> count`` for every population of one sample."""
+
+        results = self._results.get(record.id)
+        if results is None:
+            return {}
+        report = results.report
+        if report is None or report.empty:
+            return {}
+        counts: dict[str, int] = {}
+        for _, row in report.iterrows():
+            name = str(row["gate_name"])
+            gate_path = row["gate_path"]
+            if isinstance(gate_path, str):
+                gate_path = tuple(gate_path.split("/"))
+            else:
+                gate_path = tuple(gate_path)
+            counts["/".join(gate_path + (name,))] = int(row["count"])
+        return counts
+
+    def all_population_counts(self) -> dict[str, dict[str, int]]:
+        return {
+            record.id: self.population_counts(record)
+            for record in self.samples.values()
+        }
+
+    def batch_population_stats(
+        self,
+        stat_channels: Iterable[str] = (),
+        sample_ids: Iterable[str] | None = None,
+    ) -> list[BatchPopulationStat]:
+        """Population statistics for every gated sample, in sample order."""
+
+        wanted = set(sample_ids) if sample_ids is not None else None
+        rows: list[BatchPopulationStat] = []
+        for record in self.samples.values():
+            if wanted is not None and record.id not in wanted:
+                continue
+            for stat in self.population_stats(record, stat_channels):
+                rows.append(
+                    BatchPopulationStat(
+                        gate_name=stat.gate_name,
+                        full_path=stat.full_path,
+                        gate_type=stat.gate_type,
+                        count=stat.count,
+                        percent_parent=stat.percent_parent,
+                        percent_total=stat.percent_total,
+                        medians=stat.medians,
+                        means=stat.means,
+                        sample_id=record.id,
+                        sample_total=record.event_count,
+                    )
+                )
+        return rows
+
     # ------------------------------------------------------------------
     # Serialization helpers
     # ------------------------------------------------------------------
@@ -508,7 +679,11 @@ class AnalysisSession:
 
     def sample_dicts(self) -> list[dict]:
         return [
-            {"id": record.id, "path": str(record.path)}
+            {
+                "id": record.id,
+                "path": str(record.path),
+                "compensation": self.compensation_payload(record),
+            }
             for record in self.samples.values()
         ]
 

@@ -9,6 +9,7 @@ from pyqtgraph.exporters import ImageExporter
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtSvg import QSvgGenerator
 
+from .. import __version__
 from ..core.gates import (
     gate_dimension_ids,
     make_ellipse_gate,
@@ -19,9 +20,10 @@ from ..core.gates import (
 from ..core.project import load_project, save_project
 from ..core.session import AnalysisSession, SampleRecord, load_sample_file
 from ..plotting import GateTool, PlotGrid
+from .batch_stats_table import BatchStatsTable
+from .compensation_dialog import CompensationDialog
 from .gate_tree import GateTree
 from .inspector import InspectorPanel
-from .sample_panel import SamplePanel
 from .stats_table import StatsTable
 
 
@@ -61,6 +63,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selected_gate_path: tuple[str, ...] | None = None
         self.gate_parent_path: tuple[str, ...] = ("root",)
         self._dirty = False
+        self._batch_gated = False
+        self._overlay_enabled = False
         self._workers: list[_LoadWorker] = []
         self._settings = QtCore.QSettings("CytoDesk", "CytoDesk")
         self._last_dir = self._settings.value("last_dir", str(Path.home()))
@@ -90,41 +94,34 @@ class MainWindow(QtWidgets.QMainWindow):
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        self.sample_panel = SamplePanel()
         self.gate_tree = GateTree()
         self.plot_grid = PlotGrid(self.session)
         self.stats_table = StatsTable()
         self.stats_table.set_session(self.session)
+        self.batch_stats_table = BatchStatsTable()
+        self.batch_stats_table.set_session(self.session)
+        self.stats_tabs = QtWidgets.QTabWidget()
+        self.stats_tabs.addTab(self.stats_table, "当前样本")
+        self.stats_tabs.addTab(self.batch_stats_table, "跨样本")
         self.inspector = InspectorPanel()
         self.inspector.set_session(self.session)
-        self.sample_panel.set_session(self.session)
         self.gate_tree.set_session(self.session)
 
-        sample_box = QtWidgets.QGroupBox("样本")
-        sample_layout = QtWidgets.QVBoxLayout(sample_box)
-        sample_layout.setContentsMargins(2, 6, 2, 2)
-        sample_layout.addWidget(self.sample_panel)
-
-        gate_box = QtWidgets.QGroupBox("门树")
-        gate_layout = QtWidgets.QVBoxLayout(gate_box)
-        gate_layout.setContentsMargins(2, 6, 2, 2)
-        gate_layout.addWidget(self.gate_tree)
-
-        left_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        left_split.addWidget(sample_box)
-        left_split.addWidget(gate_box)
-        left_split.setSizes([260, 520])
+        workspace_box = QtWidgets.QGroupBox("样本与门树")
+        workspace_layout = QtWidgets.QVBoxLayout(workspace_box)
+        workspace_layout.setContentsMargins(2, 6, 2, 2)
+        workspace_layout.addWidget(self.gate_tree)
 
         right_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         right_split.addWidget(self.plot_grid)
-        right_split.addWidget(self.stats_table)
+        right_split.addWidget(self.stats_tabs)
         right_split.setSizes([620, 260])
 
         main_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        main_split.addWidget(left_split)
+        main_split.addWidget(workspace_box)
         main_split.addWidget(right_split)
         main_split.addWidget(self.inspector)
-        main_split.setSizes([270, 900, 320])
+        main_split.setSizes([360, 820, 320])
         main_split.setStretchFactor(1, 1)
         self.setCentralWidget(main_split)
 
@@ -159,6 +156,26 @@ class MainWindow(QtWidgets.QMainWindow):
             "导出统计 CSV…", self.export_stats, "Ctrl+Shift+E"
         )
         self.action_quit = self._action("退出", self.close, "Ctrl+Q")
+
+        self.action_batch_gate = self._action(
+            "批量门控",
+            self.run_batch_gating,
+            "Ctrl+Shift+G",
+            "对工作区内所有样本应用同一套门控策略",
+        )
+        self.action_compensation = self._action(
+            "补偿矩阵",
+            self.edit_compensation,
+            "Ctrl+Shift+C",
+            "查看、导入、编辑或移除当前样本的补偿矩阵",
+        )
+        self.action_overlay = self._action(
+            "叠加样本",
+            self.set_overlay,
+            "Ctrl+Shift+L",
+            "在同一坐标轴中叠加显示工作区的全部样本",
+            checkable=True,
+        )
 
         self.tool_group = QtGui.QActionGroup(self)
         self.tool_group.setExclusive(True)
@@ -236,6 +253,12 @@ class MainWindow(QtWidgets.QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_reset_view)
 
+        analysis_menu = self.menuBar().addMenu("分析")
+        analysis_menu.addAction(self.action_batch_gate)
+        analysis_menu.addSeparator()
+        analysis_menu.addAction(self.action_compensation)
+        analysis_menu.addAction(self.action_overlay)
+
         view_menu = self.menuBar().addMenu("门控")
         for action in self.tool_actions.values():
             view_menu.addAction(action)
@@ -261,6 +284,10 @@ class MainWindow(QtWidgets.QMainWindow):
             toolbar.addAction(action)
         toolbar.addAction(self.action_delete_gate)
         toolbar.addSeparator()
+        toolbar.addAction(self.action_batch_gate)
+        toolbar.addAction(self.action_compensation)
+        toolbar.addAction(self.action_overlay)
+        toolbar.addSeparator()
         toolbar.addAction(self.action_reset_view)
         toolbar.addSeparator()
 
@@ -276,10 +303,10 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(self.action_export_image)
 
     def _connect_signals(self) -> None:
-        self.sample_panel.open_files_requested.connect(self.open_files)
-        self.sample_panel.open_folder_requested.connect(self.open_folder)
-        self.sample_panel.sample_activated.connect(self.activate_sample)
-        self.sample_panel.remove_requested.connect(self.remove_sample)
+        self.gate_tree.open_files_requested.connect(self.open_files)
+        self.gate_tree.open_folder_requested.connect(self.open_folder)
+        self.gate_tree.sample_activated.connect(self.activate_sample)
+        self.gate_tree.remove_requested.connect(self.remove_sample)
 
         self.gate_tree.gate_selected.connect(self.select_gate)
         self.gate_tree.population_open_requested.connect(self.open_population)
@@ -295,6 +322,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_grid.cursor_moved.connect(self.cursor_label.setText)
 
         self.stats_table.gate_selected.connect(self.select_gate)
+        self.batch_stats_table.result_activated.connect(self._open_batch_result)
+        self.stats_tabs.currentChanged.connect(self._on_stats_tab_changed)
 
         self.inspector.axis_changed.connect(self._schedule_axis_change)
         self.inspector.transform_applied.connect(self.on_transform_applied)
@@ -303,6 +332,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.inspector.contours_changed.connect(self.set_contours)
         self.inspector.gate_name_changed.connect(self._rename_from_inspector)
         self.inspector.gate_color_changed.connect(self.on_gate_color_changed)
+        self.inspector.compensation_edit_requested.connect(self.edit_compensation)
 
     # ------------------------------------------------------------------
     # Loading samples
@@ -361,13 +391,18 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "加载失败", str(exc))
             return
-        self.sample_panel.refresh()
         self.gate_tree.refresh()
         self._set_dirty()
         if self.current_sample_id is None:
             self.activate_sample(record.id)
         else:
+            if self._batch_gated:
+                self._run_gating_all()
+                self._refresh_batch_stats()
             self._update_status(f"已加载 {record.id}")
+        self._refresh_sample_statuses()
+        if self._overlay_enabled:
+            self._apply_overlay_records()
         self._update_actions()
 
     def _on_load_failed(self, path: str, message: str) -> None:
@@ -407,7 +442,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if answer != QtWidgets.QMessageBox.Yes:
             return
         self.session.remove_sample(sample_id)
-        self.sample_panel.refresh()
+        self.gate_tree.refresh()
         self._set_dirty()
         if self.current_sample_id == sample_id:
             self.current_sample_id = None
@@ -415,6 +450,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.activate_sample(next(iter(self.session.samples)))
             else:
                 self._clear_view()
+        self._refresh_sample_statuses()
+        if self._batch_gated:
+            self._refresh_batch_stats()
+        if self._overlay_enabled:
+            self._apply_overlay_records()
         self._update_actions()
 
     # ------------------------------------------------------------------
@@ -428,7 +468,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_population_path = None
         self.selected_gate_path = None
         self.gate_parent_path = ("root",)
-        self.sample_panel.set_active(sample_id)
+        self.gate_tree.set_active_sample(sample_id)
 
         self._run_gating(record)
         self.plot_grid.set_population_context(None, None, record.id, reload=False)
@@ -439,7 +479,6 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.restoreOverrideCursor()
 
         self.plot_grid.set_selected_gate(None)
-        self.gate_tree.set_sample(record)
         self.gate_tree.select_population(None, emit=False)
         active = self.plot_grid.active()
         self.inspector.set_session(self.session)
@@ -452,6 +491,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_layout_combo(self.plot_grid.layout_count)
         self.set_gate_tool(self._default_tool())
         self._refresh_stats()
+        self._refresh_sample_statuses()
         self._update_sample_status()
         self._update_parent_status()
         self._update_actions()
@@ -464,7 +504,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return True
         missing = self.session.missing_gate_channels(record)
         if missing:
-            self.session.invalidate_results()
             preview = ", ".join(missing[:5])
             if len(missing) > 5:
                 preview += " …"
@@ -484,11 +523,152 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.restoreOverrideCursor()
         return True
 
+    # ------------------------------------------------------------------
+    # Batch gating / cross-sample statistics
+    # ------------------------------------------------------------------
+    def run_batch_gating(self) -> None:
+        if not self.session.samples:
+            self._update_status("工作区中没有样本")
+            return
+        if not self.session.has_gates():
+            QtWidgets.QMessageBox.information(
+                self, "批量门控", "请先创建至少一个门，再运行批量门控。"
+            )
+            return
+        self.session.invalidate_results()
+        statuses = self._run_gating_all()
+        self._batch_gated = True
+        self.gate_tree.refresh()
+        self._refresh_stats()
+        self._refresh_sample_statuses()
+        self.stats_tabs.setCurrentWidget(self.batch_stats_table)
+        failures = [status for status in statuses if not status.ok]
+        if failures:
+            preview = "\n".join(
+                f"{status.sample_id}: {status.error}" for status in failures[:8]
+            )
+            if len(failures) > 8:
+                preview += f"\n… 另有 {len(failures) - 8} 个样本"
+            self._update_status(
+                f"批量门控完成：{len(statuses) - len(failures)}/{len(statuses)} 个样本成功"
+            )
+            QtWidgets.QMessageBox.warning(
+                self,
+                "部分样本未能门控",
+                f"以下 {len(failures)} 个样本未能应用门控策略：\n\n{preview}",
+            )
+        else:
+            self._update_status(
+                f"批量门控完成：{len(statuses)} 个样本 · "
+                f"{len(self.session.gate_full_paths())} 个群体"
+            )
+        self._set_dirty()
+
+    def _run_gating_all(self):
+        if not self.session.samples:
+            return []
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            statuses = self.session.gate_all()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self._refresh_sample_statuses()
+        return statuses
+
+    def _gate_after_change(self, record: SampleRecord | None) -> None:
+        """Recompute the current sample and, if enabled, the whole batch."""
+
+        if record is not None:
+            self._run_gating(record)
+        if self._batch_gated and self.session.samples:
+            self._run_gating_all()
+        self._refresh_sample_statuses()
+
+    def _refresh_batch_stats(self) -> None:
+        panel = self.plot_grid.active()
+        x_channel = panel.x_channel
+        y_channel = None if panel.mode == "histogram" else panel.y_channel
+        stat_channels = [channel for channel in (x_channel, y_channel) if channel]
+        rows = self.session.batch_population_stats(stat_channels)
+        record = self.session.get_sample(self.current_sample_id)
+        x_name = (
+            record.channel(x_channel).short_label
+            if record and x_channel and record.channel(x_channel)
+            else x_channel
+        )
+        y_name = (
+            record.channel(y_channel).short_label
+            if record and y_channel and record.channel(y_channel)
+            else y_channel
+        )
+        self.batch_stats_table.set_stats(
+            rows,
+            x_channel,
+            y_channel,
+            x_name=x_name,
+            y_name=y_name,
+            gated_samples=len(self.session.gated_sample_ids()),
+            total_samples=len(self.session.samples),
+        )
+
+    def _refresh_sample_statuses(self) -> None:
+        statuses: dict[str, str] = {}
+        has_gates = self.session.has_gates()
+        for record in self.session.samples.values():
+            error = self.session.gating_error(record.id)
+            if error:
+                statuses[record.id] = "门控失败"
+            elif self.session.results_for(record) is not None:
+                statuses[record.id] = "已门控"
+            elif has_gates:
+                statuses[record.id] = "未门控"
+        self.gate_tree.set_statuses(statuses)
+
+    def _on_stats_tab_changed(self, index: int) -> None:
+        if self.stats_tabs.widget(index) is self.batch_stats_table:
+            self._refresh_batch_stats()
+            self._update_actions()
+
+    def _open_batch_result(self, sample_id: str, full_path) -> None:
+        if sample_id not in self.session.samples:
+            return
+        if sample_id != self.current_sample_id:
+            self.activate_sample(sample_id)
+        if full_path:
+            self.select_gate(tuple(full_path))
+        self.stats_tabs.setCurrentWidget(self.stats_table)
+
+    # ------------------------------------------------------------------
+    # Compensation
+    # ------------------------------------------------------------------
+    def edit_compensation(self) -> None:
+        record = self.session.get_sample(self.current_sample_id)
+        if record is None:
+            self._update_status("请先选择一个样本")
+            return
+        dialog = CompensationDialog(self.session, record, self)
+        dialog.exec()
+        if not dialog.applied:
+            return
+        self.session.invalidate_results()
+        if self._batch_gated:
+            self._run_gating_all()
+        else:
+            self._run_gating(record)
+        self._refresh_sample_statuses()
+        self.plot_grid.refresh_events()
+        self.plot_grid.refresh_gates()
+        panel = self.plot_grid.active()
+        self.inspector.set_record(record, panel.x_channel, panel.y_channel)
+        self._refresh_stats()
+        self._set_dirty()
+        self._update_status(f"已更新样本 {record.id} 的补偿设置")
+
     def _refresh_stats(self) -> None:
         record = self.session.get_sample(self.current_sample_id)
         if record is None:
             self.stats_table.set_stats([], total_events=0)
-            self.gate_tree.set_counts({})
+            self.gate_tree.set_counts_by_sample({})
             self.plot_grid.set_gate_percentages({})
             return
         panel = self.plot_grid.active()
@@ -497,7 +677,6 @@ class MainWindow(QtWidgets.QMainWindow):
             y_channel = None
         stat_channels = [channel for channel in (x_channel, y_channel) if channel]
         stats = self.session.population_stats(record, stat_channels)
-        counts = {"/".join(stat.full_path): stat.count for stat in stats}
         percentages = {
             "/".join(stat.full_path): stat.percent_parent for stat in stats
         }
@@ -511,8 +690,10 @@ class MainWindow(QtWidgets.QMainWindow):
             x_name=x_name,
             y_name=y_name,
         )
-        self.gate_tree.set_counts(counts)
+        self.gate_tree.set_counts_by_sample(self.session.all_population_counts())
         self.plot_grid.set_gate_percentages(percentages)
+        if self._batch_gated:
+            self._refresh_batch_stats()
         self._update_sample_status()
         self._update_actions()
 
@@ -525,10 +706,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_grid.set_population_context(None, None, "", reload=False)
         self.plot_grid.set_record(None)
         self.gate_tree.set_session(self.session)
-        self.gate_tree.set_sample(None)
+        self.gate_tree.set_active_sample(None)
         self.inspector.set_record(None, None, None)
         self.inspector.set_gate(None, None, None)
         self.stats_table.set_stats([], total_events=0)
+        self.batch_stats_table.set_stats([])
+        self.gate_tree.set_statuses({})
         self._update_sample_status()
         self._update_actions()
 
@@ -551,6 +734,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if record is None:
             return
         full_path = tuple(full_path) if full_path else None
+        if full_path is not None and self._overlay_enabled:
+            self.set_overlay(False)
         mask = None
         if full_path is not None:
             gate = self.session.gate_by_path(full_path)
@@ -680,7 +865,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.set_gate_tool(self._default_tool())
-        self._run_gating(record)
+        self._gate_after_change(record)
         self.gate_tree.refresh()
         self.plot_grid.refresh_gates()
         self.select_gate(full_path)
@@ -757,7 +942,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if record is None:
             return
         self.session.invalidate_results()
-        self._run_gating(record)
+        self._gate_after_change(record)
         self._refresh_population_view()
         self.plot_grid.refresh_gates()
         self.plot_grid.set_selected_gate(self.selected_gate_path)
@@ -783,8 +968,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "重命名失败", str(exc))
             return
         record = self.session.get_sample(self.current_sample_id)
-        if record is not None:
-            self._run_gating(record)
+        self._gate_after_change(record)
         self._remap_parent_after_rename(full_path, new_path)
         self.gate_tree.refresh()
         self._refresh_population_view()
@@ -799,8 +983,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "重命名失败", str(exc))
             return
         record = self.session.get_sample(self.current_sample_id)
-        if record is not None:
-            self._run_gating(record)
+        self._gate_after_change(record)
         self._remap_parent_after_rename(full_path, new_path)
         self.gate_tree.refresh()
         self._refresh_population_view()
@@ -864,8 +1047,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.session.remove_gate(full_path)
         self.selected_gate_path = None
         record = self.session.get_sample(self.current_sample_id)
-        if record is not None:
-            self._run_gating(record)
+        self._gate_after_change(record)
         self.gate_tree.refresh()
         self.plot_grid.set_selected_gate(None)
         self.inspector.set_gate(None, None, None)
@@ -890,6 +1072,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if record is not None:
             self.inspector.set_record(record, x_channel, y_channel)
         self._refresh_stats()
+        if self._batch_gated:
+            self._refresh_batch_stats()
         self._set_dirty()
 
     def on_transform_applied(self, channel: str, spec) -> None:
@@ -897,7 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if record is None:
             return
         self.session.set_transform(channel, spec)
-        self._run_gating(record)
+        self._gate_after_change(record)
         if self.current_population_path is None:
             self.plot_grid.refresh_events()
             self.plot_grid.refresh_gates()
@@ -918,6 +1102,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.set_gate_tool(self._default_tool())
         self._update_tool_availability()
         self._refresh_stats()
+        if self._batch_gated:
+            self._refresh_batch_stats()
         self._set_dirty()
 
     def _on_mode_combo(self, _index: int) -> None:
@@ -956,12 +1142,52 @@ class MainWindow(QtWidgets.QMainWindow):
             self.inspector.set_record(record, active.x_channel, active.y_channel)
         self.plot_grid.set_selected_gate(self.selected_gate_path)
         self._refresh_stats()
+        if self._batch_gated:
+            self._refresh_batch_stats()
         self._set_dirty()
 
     def set_contours(self, show: bool) -> None:
         self.plot_grid.set_show_contours(show)
         self.inspector.set_contours(show)
         self._set_dirty()
+
+    def set_overlay(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and len(self.session.samples) < 2:
+            enabled = False
+        if enabled and self.current_population_path is not None:
+            self.open_population(None)
+        self._overlay_enabled = enabled
+        if self.action_overlay.isChecked() != enabled:
+            self.action_overlay.setChecked(enabled)
+        records = list(self.session.samples.values()) if enabled else None
+        self.plot_grid.set_overlay(records)
+        if self.current_sample_id is not None:
+            record = self.session.get_sample(self.current_sample_id)
+            if record is not None:
+                self.plot_grid.set_population_context(
+                    None, None, record.id, reload=False
+                )
+                self.plot_grid.set_record(record)
+                self.plot_grid.refresh_gates()
+        self._refresh_stats()
+        self._update_parent_status()
+        self._set_dirty()
+        if enabled:
+            self._update_status(
+                f"已叠加显示 {len(records or [])} 个样本；门控仍共享同一策略"
+            )
+        else:
+            self._update_status("已关闭样本叠加")
+
+    def _apply_overlay_records(self) -> None:
+        if not self._overlay_enabled:
+            return
+        records = list(self.session.samples.values())
+        if len(records) < 2:
+            self.set_overlay(False)
+            return
+        self.plot_grid.set_overlay(records)
 
     def _sync_layout_combo(self, count: int) -> None:
         self.layout_combo.blockSignals(True)
@@ -978,6 +1204,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_mode_combo(panel.mode)
         self.inspector.set_contours(panel.show_contours)
         self._refresh_stats()
+        if self._batch_gated:
+            self._refresh_batch_stats()
 
     def reset_view(self) -> None:
         self.plot_grid.active().reset_view()
@@ -1023,16 +1251,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_population_path = None
         self.selected_gate_path = None
         self.gate_parent_path = ("root",)
-        self.sample_panel.set_session(self.session)
+        self._batch_gated = bool(loaded.layout.get("batch_gated"))
+        self._overlay_enabled = False
+        self.action_overlay.setChecked(False)
         self.plot_grid.set_session(self.session)
         self.gate_tree.set_session(self.session)
         self.stats_table.set_session(self.session)
+        self.batch_stats_table.set_session(self.session)
         self.inspector.set_session(self.session)
         self._apply_layout(loaded.layout)
         if loaded.active_sample_id:
             self.activate_sample(loaded.active_sample_id)
         else:
             self._clear_view()
+        if len(self.session.samples) > 1 and self.session.has_gates():
+            if not loaded.layout.get("batch_gated"):
+                # Project loading already gates every sample; expose that in
+                # the cross-sample table without forcing another pass.
+                self._batch_gated = True
+        self._refresh_sample_statuses()
+        if self._batch_gated:
+            self._refresh_batch_stats()
+        if loaded.layout.get("overlay") and len(self.session.samples) > 1:
+            self.set_overlay(True)
         self._set_dirty(False)
         self._update_actions()
 
@@ -1079,6 +1320,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "mode": self.plot_grid.active().mode,
             "active": self.plot_grid.panels.index(self.plot_grid.active()),
             "contours": self.plot_grid.active().show_contours,
+            "overlay": self._overlay_enabled,
+            "batch_gated": self._batch_gated,
             "panels": [
                 {"x": panel.x_channel, "y": panel.y_channel}
                 for panel in self.plot_grid.panels
@@ -1177,13 +1420,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_status(f"已导出图像 {Path(path).name}")
 
     def export_stats(self) -> None:
-        if self.stats_table.table.rowCount() == 0:
+        batch_mode = self.stats_tabs.currentWidget() is self.batch_stats_table
+        table = self.batch_stats_table if batch_mode else self.stats_table
+        if table.table.rowCount() == 0:
             QtWidgets.QMessageBox.information(self, "没有统计数据", "当前还没有群体统计可导出。")
             return
+        default_name = "batch_statistics.csv" if batch_mode else "statistics.csv"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "导出统计 CSV",
-            str(Path(self._last_dir) / "statistics.csv"),
+            "导出跨样本统计 CSV" if batch_mode else "导出统计 CSV",
+            str(Path(self._last_dir) / default_name),
             "CSV 文件 (*.csv)",
         )
         if not path:
@@ -1192,7 +1438,7 @@ class MainWindow(QtWidgets.QMainWindow):
             path += ".csv"
         self._last_dir = str(Path(path).parent)
         try:
-            self.stats_table.export_csv(path)
+            table.export_csv(path)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "导出失败", str(exc))
             return
@@ -1205,11 +1451,12 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.about(
             self,
             "关于 CytoDesk",
-            "<h3>CytoDesk 0.1.0</h3>"
+            f"<h3>CytoDesk {__version__}</h3>"
             "<p>桌面流式细胞数据分析软件。</p>"
             "<p>分析内核：<a href='https://github.com/whitews/flowkit'>FlowKit</a>；"
             "界面：PySide6 + pyqtgraph。</p>"
-            "<p>当前版本支持单样本 FCS 分析、手动门控、统计与项目保存。</p>",
+            "<p>当前版本支持补偿矩阵编辑、多样本批量门控、跨样本统计、"
+            "样本叠加显示与项目保存。</p>",
         )
 
     def _set_dirty(self, dirty: bool = True) -> None:
@@ -1233,16 +1480,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self.action_open_project,
         ):
             action.setEnabled(True)
-        self.action_export_stats.setEnabled(has_stats)
+        has_batch_stats = self.batch_stats_table.table.rowCount() > 0
+        self.action_export_stats.setEnabled(has_stats or has_batch_stats)
         self.action_export_image.setEnabled(has_active)
         self.action_reset_view.setEnabled(has_active)
         self.action_delete_gate.setEnabled(has_active and self.selected_gate_path is not None)
+        self.action_batch_gate.setEnabled(has_samples and self.session.has_gates())
+        self.action_compensation.setEnabled(has_active)
+        self.action_overlay.setEnabled(len(self.session.samples) > 1)
+        if self._overlay_enabled and len(self.session.samples) < 2:
+            self.set_overlay(False)
         self._update_tool_availability()
         if not has_samples:
             self.action_export_stats.setEnabled(False)
             self.action_export_image.setEnabled(False)
             self.action_reset_view.setEnabled(False)
             self.action_delete_gate.setEnabled(False)
+            self.action_batch_gate.setEnabled(False)
 
     def _update_tool_availability(self) -> None:
         has_active = self.session.get_sample(self.current_sample_id) is not None

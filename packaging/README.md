@@ -49,11 +49,11 @@ CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 工作流只在以下情况触发：
 
 - 手动触发：Actions → **Build Windows and macOS with PyInstaller** → Run workflow
-- 推送 `0.1.0` 或 `v0.1.0` 标签时自动构建并创建 GitHub Release：
+- 推送 `0.2.0` 或 `v0.2.0` 标签时自动构建并创建 GitHub Release：
 
 ```bash
-git tag 0.1.0
-git push origin 0.1.0
+git tag 0.2.0
+git push origin 0.2.0
 ```
 
 普通 `main` 分支提交不会自动触发构建，避免与标签构建重复。
