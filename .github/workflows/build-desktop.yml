@@ -1,4 +1,4 @@
-name: Build Windows and macOS with PyInstaller
+name: Build desktop packages with PyInstaller
 
 on:
   workflow_dispatch:
@@ -28,8 +28,13 @@ jobs:
         include:
           - os: windows-latest
             name: windows-x64
+            archive: zip
           - os: macos-14
             name: macos-arm64
+            archive: zip
+          - os: ubuntu-22.04
+            name: linux-x64
+            archive: tar.gz
 
     steps:
       - name: Checkout
@@ -43,6 +48,21 @@ jobs:
 
       - name: Install Python
         run: uv python install 3.12
+
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1 \
+            libegl1 \
+            libxcb-cursor0 \
+            libxkbcommon-x11-0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-shape0
 
       - name: Install dependencies
         run: uv sync --group build --python 3.12
@@ -67,6 +87,10 @@ jobs:
         if: runner.os == 'macOS'
         run: dist/CytoDesk.app/Contents/MacOS/CytoDesk --version
 
+      - name: Smoke test Linux package
+        if: runner.os == 'Linux'
+        run: dist/CytoDesk/CytoDesk --version
+
       - name: Create Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,11 +106,17 @@ jobs:
           cd dist
           ditto -c -k --keepParent CytoDesk.app "CytoDesk-${{ matrix.name }}.zip"
 
+      - name: Create Linux archive
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          tar -czf "CytoDesk-${{ matrix.name }}.tar.gz" CytoDesk
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: CytoDesk-${{ matrix.name }}
-          path: dist/CytoDesk-${{ matrix.name }}.zip
+          path: dist/CytoDesk-${{ matrix.name }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 30
 
@@ -105,5 +135,5 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: artifacts/*
           generate_release_notes: true

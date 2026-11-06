@@ -1,12 +1,13 @@
 # CytoDesk 桌面打包
 
-当前使用 **PyInstaller** 构建 Windows / macOS 桌面包。
+当前使用 **PyInstaller** 构建 Windows / macOS / Linux 桌面包。
 
 PyInstaller 不支持跨平台交叉编译：
 
 - Windows 包必须在 Windows 上构建
 - macOS 包必须在 macOS 上构建
-- Linux 上可以本地验证 spec 是否正确，但产物不能直接给 Windows/macOS 使用
+- Linux 包必须在 Linux 上构建
+- 三个平台的产物不能互相替代
 
 GitHub Actions 工作流会自动在目标系统上构建并上传产物：
 
@@ -40,7 +41,7 @@ dependencies = ["flowkit>=1.3.2,<1.4"]
 ```
 
 打包时会使用当前虚拟环境中安装的 FlowKit 版本，并将其代码一并打入
-Windows/macOS 产物。运行打包后的程序不再依赖本地 FlowKit 仓库。
+三个平台的产物。运行打包后的程序不再依赖本地 FlowKit 仓库。
 
 CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 
@@ -48,7 +49,7 @@ CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 
 工作流只在以下情况触发：
 
-- 手动触发：Actions → **Build Windows and macOS with PyInstaller** → Run workflow
+- 手动触发：Actions → **Build desktop packages with PyInstaller** → Run workflow
 - 推送 `0.2.0` 或 `v0.2.0` 标签时自动构建并创建 GitHub Release：
 
 ```bash
@@ -62,8 +63,30 @@ git push origin 0.2.0
 
 - `windows-latest` → `CytoDesk-windows-x64.zip`
 - `macos-14` → `CytoDesk-macos-arm64.zip`
+- `ubuntu-22.04` → `CytoDesk-linux-x64.tar.gz`
 
 当前不构建 macOS Intel（x64）版本。
+
+### Linux 包说明
+
+Linux 包在 Ubuntu 22.04 上构建，目标为 x86_64：
+
+- 最低依赖约为 glibc 2.35
+- 建议在 Ubuntu 22.04 或更新版本上运行
+- 解压后运行：
+
+```bash
+tar -xzf CytoDesk-linux-x64.tar.gz
+./CytoDesk/CytoDesk
+```
+
+- 如果系统缺少 Qt/X11 运行库，安装：
+
+```bash
+sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libgl1 libegl1
+```
+
+工作流已在 Ubuntu runner 上安装这些库，以便 PyInstaller 收集依赖。
 
 ## 签名与公证
 

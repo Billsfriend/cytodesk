@@ -223,10 +223,10 @@ git clone --depth 1 https://github.com/whitews/FlowKit.git ../FlowKit-master
 - 直方图模式、样本叠加
 - 补偿编辑器实时预览、多样本合并门树与跨样本计数
 
-## 打包 Windows / macOS
+## 打包 Windows / macOS / Linux
 
-使用 PyInstaller + GitHub Actions。PyInstaller 不能交叉编译，Windows 包在
-Windows runner 上构建，macOS 包在 macOS runner 上构建。
+使用 PyInstaller + GitHub Actions。PyInstaller 不能交叉编译，Windows 包在 Windows runner 上构建，macOS 包在 macOS runner 上构建，
+Linux 包在 Ubuntu 22.04 runner 上构建。
 
 本地构建：
 
@@ -239,8 +239,9 @@ uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
 
 - Windows：`dist/CytoDesk/CytoDesk.exe`
 - macOS：`dist/CytoDesk.app`
+- Linux：`dist/CytoDesk/CytoDesk`
 
-推送 `0.1.0` 或 `v0.1.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
+推送 `0.2.0` 或 `v0.2.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
 普通 `main` 分支提交不会自动构建；需要在 Actions 中手动运行。
 详细说明见 `packaging/README.md`。
 
