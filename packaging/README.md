@@ -62,7 +62,7 @@ git push origin 0.2.0
 构建矩阵：
 
 - `windows-latest` → `CytoDesk-windows-x64.zip`
-- `macos-14` → `CytoDesk-macos-arm64.zip`
+- `macos-latest` → `CytoDesk-macos-arm64.zip`
 - `ubuntu-22.04` → `CytoDesk-linux-x64.tar.gz`
 
 当前不构建 macOS Intel（x64）版本。
