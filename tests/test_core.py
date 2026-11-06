@@ -166,6 +166,36 @@ def test_nested_gate(session):
     assert not sess.gate_full_paths()
 
 
+def test_gate_names_are_globally_unique(session):
+    sess, rec = session
+    x_channel, y_channel = _two_channels(rec)
+    matrix, _ = sess.transformed_matrix(rec, [x_channel, y_channel])
+    x0, x1 = np.percentile(matrix[x_channel], [30, 70])
+    y0, y1 = np.percentile(matrix[y_channel], [30, 70])
+
+    def rectangle(name):
+        return make_rectangle_gate(
+            name,
+            x_channel,
+            y_channel,
+            (float(x0), float(x1)),
+            (float(y0), float(y1)),
+            sess.get_transform_id(x_channel),
+            sess.get_transform_id(y_channel),
+        )
+
+    first = sess.add_gate(rectangle("Same"), ("root",))
+    second = sess.add_gate(rectangle("Same"), first)
+    assert first == ("root", "Same")
+    assert second == ("root", "Same", "Same_2")
+    assert sess.ensure_unique_gate_name("Same") == ("Same_3", True)
+
+    third = sess.add_gate(rectangle("Third"), ("root",))
+    renamed = sess.rename_gate(third, "Same")
+    assert renamed == ("root", "Same_3")
+    assert sess.unique_gate_name(("root",)) == "Gate 1"
+
+
 def test_gate_geometry_helpers():
     gate = make_ellipse_gate(
         "E", "X", "Y", (0.5, 0.5), 0.2, 0.1, "xf", "yf"

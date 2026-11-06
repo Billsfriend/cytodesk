@@ -358,6 +358,97 @@ def test_population_view_filters_and_rescales(qtbot):
     window._set_dirty(False)
 
 
+@pytest.mark.skipif(not COMP_FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_open_fsc_ssc_gate_defaults_to_fsc_fsc_h(qtbot):
+    import numpy as np
+
+    from cytodesk.core.gates import make_rectangle_gate
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(COMP_FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+    panel.set_channels("FSC-A", "SSC-A")
+    matrix, _ = window.session.transformed_matrix(record, ["FSC-A", "SSC-A"])
+    x0, x1 = np.percentile(matrix["FSC-A"], [20, 80])
+    y0, y1 = np.percentile(matrix["SSC-A"], [20, 80])
+    gate = make_rectangle_gate(
+        "ScatterGate",
+        "FSC-A",
+        "SSC-A",
+        (float(x0), float(x1)),
+        (float(y0), float(y1)),
+        window.session.get_transform_id("FSC-A"),
+        window.session.get_transform_id("SSC-A"),
+    )
+    path = window.session.add_gate(gate, ("root",))
+    window._run_gating(record)
+    window.plot_grid.refresh_gates()
+    window.open_population(path)
+
+    assert panel.x_channel == "FSC-A"
+    assert panel.y_channel == "FSC-H"
+    assert len(panel._x) == int(window.session.gate_membership(record, path).sum())
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_duplicate_manual_gate_name_gets_suffix(qtbot, monkeypatch):
+    import numpy as np
+
+    from cytodesk.core.gates import make_rectangle_gate
+    from cytodesk.ui import main_window as mw
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        mw.QtWidgets.QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("Duplicate", True)),
+    )
+    monkeypatch.setattr(
+        mw.QtWidgets.QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **kwargs: warnings.append(args[2] if len(args) > 2 else "")),
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+    x_channel, y_channel = panel.x_channel, panel.y_channel
+    matrix, _ = window.session.transformed_matrix(record, [x_channel, y_channel])
+    x0, x1 = np.percentile(matrix[x_channel], [30, 70])
+    y0, y1 = np.percentile(matrix[y_channel], [30, 70])
+    existing = make_rectangle_gate(
+        "Duplicate",
+        x_channel,
+        y_channel,
+        (float(x0), float(x1)),
+        (float(y0), float(y1)),
+        window.session.get_transform_id(x_channel),
+        window.session.get_transform_id(y_channel),
+    )
+    window.session.add_gate(existing, ("root",))
+    window._run_gating(record)
+
+    window.on_gate_drawn(
+        {
+            "type": "rectangle",
+            "channels": [x_channel, y_channel],
+            "ranges": [[float(x0), float(x1)], [float(y0), float(y1)]],
+        }
+    )
+    assert ("root", "Duplicate_2") in window.session.gate_full_paths()
+    assert any("Duplicate_2" in message for message in warnings)
+    window._set_dirty(False)
+
+
 @pytest.mark.skipif(not FCS_PATH.exists(), reason="FlowKit example data not available")
 def test_switch_to_density_clears_gate_highlight(qtbot):
     import numpy as np

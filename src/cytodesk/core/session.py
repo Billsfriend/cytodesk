@@ -350,8 +350,33 @@ class AnalysisSession:
             if path[:-1] == tuple(parent_path)
         }
 
+    def gate_names(self, exclude_path: tuple[str, ...] | None = None) -> set[str]:
+        excluded = tuple(exclude_path) if exclude_path is not None else None
+        return {
+            path[-1]
+            for path in self.gate_full_paths()
+            if excluded is None or path != excluded
+        }
+
+    def ensure_unique_gate_name(
+        self,
+        name: str,
+        exclude_path: tuple[str, ...] | None = None,
+    ) -> tuple[str, bool]:
+        """Return a globally unique gate name, adding a numeric suffix if needed."""
+
+        existing = self.gate_names(exclude_path)
+        if name not in existing:
+            return name, False
+        index = 2
+        while f"{name}_{index}" in existing:
+            index += 1
+        return f"{name}_{index}", True
+
     def unique_gate_name(self, parent_path: tuple[str, ...]) -> str:
-        existing = self.child_names(parent_path)
+        # Gate names are globally unique in CytoDesk, even across different parents.
+        _ = parent_path
+        existing = self.gate_names()
         i = 1
         while f"Gate {i}" in existing:
             i += 1
@@ -362,6 +387,8 @@ class AnalysisSession:
         if not parent_path:
             parent_path = ("root",)
         self._validate_gate_name(gate.gate_name)
+        unique_name, _changed = self.ensure_unique_gate_name(gate.gate_name)
+        gate.gate_name = unique_name
         self.gating_strategy.add_gate(gate, parent_path)
         full_path = parent_path + (gate.gate_name,)
         if "/".join(full_path) not in self.gate_colors:
@@ -396,8 +423,9 @@ class AnalysisSession:
         if not new_name:
             raise ValueError("门名称不能为空")
         self._validate_gate_name(new_name)
-        if new_name in self.child_names(full_path[:-1]):
-            raise ValueError(f"同一层级已存在名为 {new_name!r} 的门")
+        new_name, _changed = self.ensure_unique_gate_name(
+            new_name, exclude_path=tuple(full_path)
+        )
         self.gating_strategy.rename_gate(
             full_path[-1], new_name, gate_path=full_path[:-1]
         )

@@ -767,6 +767,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"样本 {record.id} 不包含门 {full_path[-1]} 使用的通道。",
                 )
                 return
+            display_ids = list(ids)
+            if (
+                len(ids) >= 2
+                and {ids[0], ids[1]} == {"FSC-A", "SSC-A"}
+                and {"FSC-A", "FSC-H"}.issubset(available)
+            ):
+                # Entering a population gated on FSC-A/SSC-A defaults to the
+                # singlet view (FSC-A/FSC-H), matching the common workflow.
+                display_ids = ["FSC-A", "FSC-H"]
+
             if len(ids) == 1:
                 y_channel = panel.y_channel
                 if panel.mode != "histogram":
@@ -775,14 +785,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 if y_channel is None:
                     candidates = [c.pnn for c in record.transform_candidates()]
                     y_channel = candidates[1] if len(candidates) > 1 else ids[0]
-                panel.set_channels(ids[0], y_channel)
-                self.inspector.set_record(record, ids[0], y_channel)
+                panel.set_channels(display_ids[0], y_channel)
+                self.inspector.set_record(record, display_ids[0], y_channel)
             elif len(ids) >= 2:
                 if panel.mode == "histogram":
                     self.set_mode("scatter")
                     panel = self.plot_grid.active()
-                panel.set_channels(ids[0], ids[1])
-                self.inspector.set_record(record, ids[0], ids[1])
+                panel.set_channels(display_ids[0], display_ids[1])
+                self.inspector.set_record(record, display_ids[0], display_ids[1])
 
         label = record.id
         if full_path is not None:
@@ -851,11 +861,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if not name:
             QtWidgets.QMessageBox.warning(self, "无效名称", "门名称不能为空。")
             return
-        if name in self.session.child_names(parent_path):
-            QtWidgets.QMessageBox.warning(
-                self, "名称重复", f"同一层级已存在名为 {name!r} 的门。"
-            )
-            return
         try:
             gate = self._build_gate_from_draft(name, draft)
             full_path = self.session.add_gate(gate, parent_path)
@@ -864,6 +869,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_gate_tool(self._default_tool())
             return
 
+        if full_path[-1] != name:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "门名称重复",
+                f"门名称 {name!r} 已被使用，已自动改为 {full_path[-1]!r}。",
+            )
         self.set_gate_tool(self._default_tool())
         self._gate_after_change(record)
         self.gate_tree.refresh()
@@ -967,6 +978,12 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "重命名失败", str(exc))
             return
+        if new_path[-1] != name:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "门名称重复",
+                f"门名称 {name!r} 已被使用，已自动改为 {new_path[-1]!r}。",
+            )
         record = self.session.get_sample(self.current_sample_id)
         self._gate_after_change(record)
         self._remap_parent_after_rename(full_path, new_path)
@@ -977,11 +994,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_dirty()
 
     def _rename_from_inspector(self, full_path: tuple[str, ...], name: str) -> None:
+        name = name.strip()
+        if not name or name == full_path[-1]:
+            return
         try:
             new_path = self.session.rename_gate(full_path, name)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "重命名失败", str(exc))
             return
+        if new_path[-1] != name:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "门名称重复",
+                f"门名称 {name!r} 已被使用，已自动改为 {new_path[-1]!r}。",
+            )
         record = self.session.get_sample(self.current_sample_id)
         self._gate_after_change(record)
         self._remap_parent_after_rename(full_path, new_path)
