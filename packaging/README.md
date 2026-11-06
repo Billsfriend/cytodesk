@@ -62,9 +62,8 @@ git push origin 0.2.0
 
 - `windows-latest` → `CytoDesk-windows-x64.zip`
 - `macos-14` → `CytoDesk-macos-arm64.zip`
-- `macos-15-intel` → `CytoDesk-macos-x64.zip`
 
-如果 GitHub 停用了某个 macOS runner 标签，修改 `.github/workflows/build-desktop.yml` 中的 `matrix.include` 即可。
+当前不构建 macOS Intel（x64）版本。
 
 ## 签名与公证
 

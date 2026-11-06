@@ -30,10 +30,6 @@ jobs:
             name: windows-x64
           - os: macos-14
             name: macos-arm64
-          # Intel macOS runner. If GitHub retires this label, remove this entry
-          # or replace it with another x86_64 macOS runner.
-          - os: macos-15-intel
-            name: macos-x64
 
     steps:
       - name: Checkout
