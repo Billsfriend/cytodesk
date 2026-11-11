@@ -1,5 +1,6 @@
 # CNB (cnb.cool) pipeline.
 #
+# Like the GitHub workflow, CNB only runs on version tags (0.* / v*).
 # CNB runs Linux containers, so it builds the Linux x64 package here.
 # Windows x64 and macOS arm64 packaging remain in .github/workflows/build-desktop.yml,
 # because PyInstaller cannot cross-compile those platforms from Linux.
@@ -60,50 +61,31 @@
     } > release-body.md
     cat release-body.md
 
-main:
-  push:
-    - <<: *linux-pipeline
-      name: linux-build
-      stages:
-        - *install
-        - *test
-        - *build
-        - name: upload-commit-artifact
-          image: cnbcool/attachments:latest
-          settings:
-            attachments:
-              - "./dist/CytoDesk-linux-x64.tar.gz"
-  pull_request:
-    - <<: *linux-pipeline
-      name: linux-pr-check
-      stages:
-        - *install
-        - *test
+.release-pipeline: &release-pipeline
+  <<: *linux-pipeline
+  name: linux-release
+  label:
+    type: RELEASE
+  stages:
+    - *install
+    - *test
+    - *build
+    - *release-body
+    - name: create-release
+      type: git:release
+      options:
+        descriptionFromFile: release-body.md
+        latest: true
+    - name: upload-release-asset
+      image: cnbcool/attachments:latest
+      settings:
+        attachments:
+          - "./dist/CytoDesk-linux-x64.tar.gz"
 
-$:
-  push:
-    - <<: *linux-pipeline
-      name: linux-check
-      stages:
-        - *install
-        - *test
+# Match the GitHub release trigger: only version tags build/release.
+"0.*":
   tag_push:
-    - <<: *linux-pipeline
-      name: linux-release
-      label:
-        type: RELEASE
-      stages:
-        - *install
-        - *test
-        - *build
-        - *release-body
-        - name: create-release
-          type: git:release
-          options:
-            descriptionFromFile: release-body.md
-            latest: true
-        - name: upload-release-asset
-          image: cnbcool/attachments:latest
-          settings:
-            attachments:
-              - "./dist/CytoDesk-linux-x64.tar.gz"
+    - *release-pipeline
+"v*":
+  tag_push:
+    - *release-pipeline

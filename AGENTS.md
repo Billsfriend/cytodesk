@@ -67,12 +67,12 @@
 
 - GitHub CI matrix: Windows x64, macOS arm64 (`macos-latest`), Ubuntu 22.04 x64.
   macOS Intel is intentionally not built.
-- `.cnb.yml` is the CNB pipeline. It builds **Linux x64 only** using
-  `packaging/cnb.Dockerfile`; Windows/macOS still require GitHub Actions because
-  PyInstaller cannot cross-compile. CNB tag releases read `CNB_TAG_MESSAGE` and upload
-  the Linux archive via `cnbcool/attachments`.
-- Workflow triggers only on tags `0.*` / `v*` and manual dispatch; pushing `main` does
-  not build.
+- `.cnb.yml` is the CNB pipeline and, like GitHub, runs **only on `0.*` / `v*` tags**.
+  It builds **Linux x64 only** using `packaging/cnb.Dockerfile`; Windows/macOS still
+  require GitHub Actions because PyInstaller cannot cross-compile. CNB tag releases
+  read `CNB_TAG_MESSAGE` and upload the Linux archive via `cnbcool/attachments`.
+- GitHub workflow triggers only on tags `0.*` / `v*` and manual dispatch; pushing
+  `main` does not build.
 - Actions are pinned to Node 24 versions (`checkout@v7`, `upload-artifact@v7`,
   `download-artifact@v8`, `setup-uv@v10.3.3`, `action-gh-release@v3`); do not downgrade.
 - Bump `pyproject.toml`, `src/cytodesk/__init__.py`, `uv.lock`, and README before

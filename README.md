@@ -241,9 +241,9 @@ git clone --depth 1 https://github.com/whitews/FlowKit.git ../FlowKit-master
 使用 PyInstaller + GitHub Actions。PyInstaller 不能交叉编译，Windows 包在 Windows runner 上构建，macOS 包在 macOS runner 上构建，
 Linux 包在 Ubuntu 22.04 runner 上构建。
 
-另提供 CNB（cnb.cool）流水线 `.cnb.yml`：CNB 运行 Linux 容器，因此构建 Linux x64 包，
-并在 tag push 时按 tag message 创建 Release、上传 Linux 产物；Windows 和 macOS 仍由
-GitHub Actions 构建。
+另提供 CNB（cnb.cool）流水线 `.cnb.yml`：与 GitHub 一样只在 `0.*` / `v*` tag push 时执行。
+CNB 运行 Linux 容器，因此构建 Linux x64 包，并按 tag message 创建 Release、上传 Linux 产物；
+Windows 和 macOS 仍由 GitHub Actions 构建。
 
 本地构建：
 

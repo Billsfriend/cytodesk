@@ -81,13 +81,17 @@ git push cnb 0.3.0
 
 ## CNB 流水线
 
-仓库根目录的 `.cnb.yml` 提供 CNB（cnb.cool）流水线：
+仓库根目录的 `.cnb.yml` 提供 CNB（cnb.cool）流水线，触发条件与 GitHub 一致：
+只在推送 `0.*` / `v*` 版本 tag 时执行。
 
-- `main` push：安装依赖、运行测试、构建 Linux x64 包，并作为 commit 附件上传
-- Pull Request：安装依赖并运行测试
-- 其他分支 push：安装依赖并运行测试
-- tag push：运行测试、构建 Linux x64 包、按 tag message 创建 Release，
-  并上传 `CytoDesk-linux-x64.tar.gz`
+tag push 时会：
+
+- 安装依赖并运行测试
+- 构建 Linux x64 包
+- 按 tag message 创建 CNB Release
+- 上传 `CytoDesk-linux-x64.tar.gz` 作为 Release 附件
+
+普通分支 push 和 Pull Request 不会触发 CNB 构建。
 
 CNB 使用 Linux 容器，因此只构建 Linux 包；Windows x64 与 macOS arm64 仍由
 GitHub Actions 构建，因为 PyInstaller 不能从 Linux 交叉编译这两个平台。
