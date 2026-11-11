@@ -64,9 +64,12 @@ CytoDesk 0.3.0
 - 门树选择联动定义视图
 EOF
 git push origin 0.3.0
+git push cnb 0.3.0
 ```
 
 普通 `main` 分支提交不会自动触发构建，避免与标签构建重复。
+发布 tag 必须同时推到 GitHub 与 CNB；CNB 的 `tag_push` 读取 tag 所在 commit 的
+`.cnb.yml`，因此 tag 必须包含 CNB 流水线文件。
 
 构建矩阵：
 

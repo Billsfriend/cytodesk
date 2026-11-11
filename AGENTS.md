@@ -78,8 +78,11 @@
 - Bump `pyproject.toml`, `src/cytodesk/__init__.py`, `uv.lock`, and README before
   creating a release tag.
 - Create annotated tags whose message is a short user-facing summary vs the previous
-  tag. The release job uses the tag annotation as the GitHub Release body; it does not
+  tag. The GitHub release job uses the tag annotation as the release body; it does not
   use `generate_release_notes`.
+- Push release tags to **both** remotes: `git push origin <tag>` and
+  `git push cnb <tag>`. CNB's `tag_push` only runs if the tag commit contains
+  `.cnb.yml`; pushing only `main` produces no CNB release.
 - Keep FlowKit as a PyPI dependency; do not reintroduce `[tool.uv.sources]` path/editable
   configuration.
 - Packages are unsigned: Windows SmartScreen and macOS Gatekeeper warnings are expected,
