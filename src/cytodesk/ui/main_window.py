@@ -12,8 +12,10 @@ from PySide6.QtSvg import QSvgGenerator
 from .. import __version__
 from ..core.gates import (
     gate_dimension_ids,
+    gate_type,
     make_ellipse_gate,
     make_polygon_gate,
+    make_quadrant_gate,
     make_range_gate,
     make_rectangle_gate,
 )
@@ -182,9 +184,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tool_actions: dict[GateTool, QtGui.QAction] = {}
         tool_specs = [
             (GateTool.RECTANGLE, "矩形", "Ctrl+1", "拖拽绘制矩形门"),
-            (GateTool.POLYGON, "多边形", "Ctrl+2", "单击添加顶点，双击或右键结束"),
-            (GateTool.ELLIPSE, "椭圆", "Ctrl+3", "拖拽绘制椭圆门（默认）"),
+            (GateTool.POLYGON, "多边形", "Ctrl+2", "单击添加顶点，双击或右键结束（默认）"),
+            (GateTool.ELLIPSE, "椭圆", "Ctrl+3", "拖拽绘制椭圆门"),
             (GateTool.RANGE, "范围", "Ctrl+4", "在 X 轴上拖拽绘制一维范围门"),
+            (GateTool.QUADRANT, "象限", "Ctrl+5", "单击放置十字分割，生成四个象限门"),
         ]
         for tool, text, shortcut, tip in tool_specs:
             action = self._action(text, None, shortcut, tip, checkable=True)
@@ -192,7 +195,7 @@ class MainWindow(QtWidgets.QMainWindow):
             action.triggered.connect(lambda _checked=False, t=tool: self.set_gate_tool(t))
             self.tool_group.addAction(action)
             self.tool_actions[tool] = action
-        self.tool_actions[GateTool.ELLIPSE].setChecked(True)
+        self.tool_actions[GateTool.POLYGON].setChecked(True)
 
         self.action_delete_gate = self._action(
             "删除门", self.delete_selected_gate, "Ctrl+Delete"
@@ -424,6 +427,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._workers.remove(worker)
         if self.current_sample_id is None and self.session.samples:
             self.activate_sample(next(iter(self.session.samples)))
+        elif self.current_sample_id is not None and len(self.session.samples) > 1:
+            # Root views pool the numeric range of every loaded sample, so a
+            # newly added file may widen the current axes.
+            self.plot_grid.refresh_events()
+            panel = self.plot_grid.active()
+            record = self.session.get_sample(self.current_sample_id)
+            if record is not None:
+                self.inspector.set_record(record, panel.x_channel, panel.y_channel)
         self._update_actions()
         if not self._workers:
             self._update_status("就绪")
@@ -450,6 +461,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.activate_sample(next(iter(self.session.samples)))
             else:
                 self._clear_view()
+        else:
+            self.plot_grid.refresh_events()
         self._refresh_sample_statuses()
         if self._batch_gated:
             self._refresh_batch_stats()
@@ -729,7 +742,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if action is not None and not action.isChecked():
             action.setChecked(True)
 
-    def open_population(self, full_path: tuple[str, ...] | None) -> None:
+    def open_population(
+        self, full_path: tuple[str, ...] | None, quiet: bool = False
+    ) -> None:
         record = self.session.get_sample(self.current_sample_id)
         if record is None:
             return
@@ -741,31 +756,43 @@ class MainWindow(QtWidgets.QMainWindow):
             gate = self.session.gate_by_path(full_path)
             if gate is None:
                 return
+            node = self.session.gate_node_by_path(full_path)
+            if node is not None and gate_type(node.gate) == "QuadrantGate":
+                if not quiet:
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "请选择象限",
+                        "象限门本身不是可打开的群体，请在门树中双击具体的象限。",
+                    )
+                return
             if not self._run_gating(record):
                 return
             try:
                 mask = self.session.gate_membership(record, full_path)
             except Exception as exc:
-                QtWidgets.QMessageBox.warning(self, "打开群体失败", str(exc))
+                if not quiet:
+                    QtWidgets.QMessageBox.warning(self, "打开群体失败", str(exc))
                 return
             if mask is None or not bool(np.any(mask)):
-                QtWidgets.QMessageBox.information(
-                    self, "空群体", f"门 {' / '.join(full_path[1:])} 内没有事件。"
-                )
+                if not quiet:
+                    QtWidgets.QMessageBox.information(
+                        self, "空群体", f"门 {' / '.join(full_path[1:])} 内没有事件。"
+                    )
                 return
 
             panel = self.plot_grid.active()
-            ids = gate_dimension_ids(gate)
+            ids = self.session.gate_channels_for_path(full_path)
             available = {channel.pnn for channel in record.channels}
             channels_available = bool(ids) and ids[0] in available and (
                 len(ids) < 2 or ids[1] in available
             )
             if not channels_available:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "通道不匹配",
-                    f"样本 {record.id} 不包含门 {full_path[-1]} 使用的通道。",
-                )
+                if not quiet:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "通道不匹配",
+                        f"样本 {record.id} 不包含门 {full_path[-1]} 使用的通道。",
+                    )
                 return
             display_ids = list(ids)
             if (
@@ -834,7 +861,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return (
             GateTool.RANGE
             if self.plot_grid.active().mode == "histogram"
-            else GateTool.ELLIPSE
+            else GateTool.POLYGON
         )
 
     def _cancel_gate_tool(self) -> None:
@@ -850,7 +877,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if parent_path != ("root",) and self.session.gate_by_path(parent_path) is None:
             parent_path = ("root",)
         self.gate_parent_path = parent_path
-        default_name = self.session.unique_gate_name(parent_path)
+        name_base = "Quadrant" if draft.get("type") == "quadrant" else "Gate"
+        default_name = self.session.unique_gate_name(parent_path, base=name_base)
         name, ok = QtWidgets.QInputDialog.getText(
             self, "新建门", "门名称：", text=default_name
         )
@@ -925,6 +953,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 xf[channels[0]],
                 xf[channels[1]],
             )
+        if gtype == "quadrant":
+            dividers = draft["dividers"]
+            return make_quadrant_gate(
+                name,
+                channels[0],
+                channels[1],
+                float(dividers[0]),
+                float(dividers[1]),
+                xf[channels[0]],
+                xf[channels[1]],
+            )
         raise ValueError(f"不支持的门类型: {gtype}")
 
     def select_gate(self, full_path: tuple[str, ...] | None) -> None:
@@ -935,18 +974,58 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             gate = None
         self.selected_gate_path = tuple(full_path) if full_path else None
+        if self.selected_gate_path is not None and gate is not None:
+            self._show_gate_definition_view(self.selected_gate_path)
         self.plot_grid.set_selected_gate(self.selected_gate_path)
         if self.selected_gate_path is None:
             self.gate_tree.select_population(self.current_population_path, emit=False)
         else:
             self.gate_tree.select_path(self.selected_gate_path, emit=False)
         if self.selected_gate_path is not None and gate is not None:
-            color = self.session.gate_color(self.selected_gate_path)
+            color_path = self.session.gate_owner_path(self.selected_gate_path)
+            color = self.session.gate_color(color_path)
             self.inspector.set_gate(self.selected_gate_path, gate, color)
         else:
             self.inspector.set_gate(None, None, None)
         self._update_parent_status()
         self._update_actions()
+
+    def _show_gate_definition_view(self, full_path: tuple[str, ...]) -> None:
+        """Switch the active plot to the channels/mode a gate was drawn in."""
+
+        record = self.session.get_sample(self.current_sample_id)
+        if record is None:
+            return
+        context, channels = self.session.gate_definition_view(full_path)
+        if not channels:
+            return
+        current_context = self.current_population_path or ("root",)
+        if context != current_context:
+            self.open_population(
+                None if context == ("root",) else context, quiet=True
+            )
+        panel = self.plot_grid.active()
+        if len(channels) == 1:
+            if panel.mode != "histogram":
+                self.set_mode("histogram")
+                panel = self.plot_grid.active()
+            y_channel = panel.y_channel
+            if y_channel is None or y_channel == channels[0]:
+                candidates = [
+                    channel.pnn
+                    for channel in record.transform_candidates()
+                    if channel.pnn != channels[0]
+                ]
+                y_channel = candidates[0] if candidates else channels[0]
+            panel.set_channels(channels[0], y_channel)
+            self.inspector.set_record(record, channels[0], y_channel)
+        else:
+            if panel.mode == "histogram":
+                self.set_mode("scatter")
+                panel = self.plot_grid.active()
+            panel.set_channels(channels[0], channels[1])
+            self.inspector.set_record(record, channels[0], channels[1])
+        self._refresh_stats()
 
     def on_gate_changed(self, full_path: tuple[str, ...]) -> None:
         record = self.session.get_sample(self.current_sample_id)
@@ -1034,7 +1113,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_parent_status()
 
     def on_gate_color_changed(self, full_path: tuple[str, ...], color: str) -> None:
-        self.session.set_gate_color(full_path, color)
+        color_path = self.session.gate_owner_path(tuple(full_path))
+        self.session.set_gate_color(color_path, color)
         self.plot_grid.refresh_gates()
         if self.selected_gate_path == full_path:
             gate = self.session.gate_by_path(full_path)
@@ -1050,6 +1130,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _delete_gate_path(self, full_path: tuple[str, ...]) -> None:
         if self.session.gate_by_path(full_path) is None:
             return
+        full_path = self.session.gate_owner_path(tuple(full_path))
         descendants = [
             path
             for path in self.session.gate_full_paths()

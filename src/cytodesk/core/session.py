@@ -332,6 +332,13 @@ class AnalysisSession:
     def gate_by_path(self, full_path: tuple[str, ...]):
         if not full_path or full_path[0] != "root" or len(full_path) < 2:
             return None
+        node = self.gate_node_by_path(full_path)
+        if node is not None:
+            # Individual quadrants are not gates in FlowKit; return the owning
+            # QuadrantGate so callers can inspect channels and geometry.
+            if isinstance(node.gate, fk_gates.Quadrant):
+                return node.parent.gate
+            return node.gate
         try:
             return self.gating_strategy.get_gate(full_path[-1], full_path[:-1])
         except Exception:
@@ -342,6 +349,56 @@ class AnalysisSession:
             if path == tuple(full_path):
                 return node
         return None
+
+    def gate_owner_path(self, full_path: tuple[str, ...]) -> tuple[str, ...]:
+        """Return the removable/template gate path for a tree path.
+
+        A quadrant cannot be removed or edited independently from its owning
+        QuadrantGate, so its parent path is returned.
+        """
+
+        full_path = tuple(full_path)
+        node = self.gate_node_by_path(full_path)
+        if node is not None and isinstance(node.gate, fk_gates.Quadrant):
+            return tuple(part.name for part in node.parent.path)
+        return full_path
+
+    def gate_channels_for_path(self, full_path: tuple[str, ...]) -> list[str]:
+        """Return the channel IDs used by a gate or quadrant population."""
+
+        node = self.gate_node_by_path(full_path)
+        if node is None:
+            gate = self.gate_by_path(full_path)
+            return gate_dimension_ids(gate) if gate is not None else []
+        gate = node.gate
+        if isinstance(gate, fk_gates.Quadrant):
+            gate = node.parent.gate
+        return gate_dimension_ids(gate)
+
+    def gate_definition_view(
+        self, full_path: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], list[str]]:
+        """Return the population context and channels where a gate was drawn.
+
+        Quadrant populations are drawn on the QuadrantGate's parent
+        population, so their context skips both the quadrant and the gate node.
+        """
+
+        full_path = tuple(full_path)
+        node = self.gate_node_by_path(full_path)
+        if node is None:
+            return full_path[:-1] or ("root",), []
+        gate = node.gate
+        if isinstance(gate, fk_gates.Quadrant):
+            context = (
+                tuple(part.name for part in node.parent.parent.path)
+                if node.parent is not None and node.parent.parent is not None
+                else ("root",)
+            )
+            gate = node.parent.gate
+        else:
+            context = full_path[:-1] or ("root",)
+        return context, gate_dimension_ids(gate)
 
     def child_names(self, parent_path: tuple[str, ...]) -> set[str]:
         return {
@@ -373,14 +430,16 @@ class AnalysisSession:
             index += 1
         return f"{name}_{index}", True
 
-    def unique_gate_name(self, parent_path: tuple[str, ...]) -> str:
+    def unique_gate_name(
+        self, parent_path: tuple[str, ...], base: str = "Gate"
+    ) -> str:
         # Gate names are globally unique in CytoDesk, even across different parents.
         _ = parent_path
         existing = self.gate_names()
         i = 1
-        while f"Gate {i}" in existing:
+        while f"{base} {i}" in existing:
             i += 1
-        return f"Gate {i}"
+        return f"{base} {i}"
 
     def add_gate(self, gate, parent_path: tuple[str, ...]) -> tuple[str, ...]:
         parent_path = tuple(parent_path)
@@ -389,6 +448,21 @@ class AnalysisSession:
         self._validate_gate_name(gate.gate_name)
         unique_name, _changed = self.ensure_unique_gate_name(gate.gate_name)
         gate.gate_name = unique_name
+        if isinstance(gate, fk_gates.QuadrantGate):
+            used_names = self.gate_names()
+            used_names.add(unique_name)
+            renamed_quadrants = {}
+            for quadrant_id, quadrant in gate.quadrants.items():
+                candidate = quadrant_id
+                if candidate in used_names:
+                    index = 2
+                    while f"{candidate}_{index}" in used_names:
+                        index += 1
+                    candidate = f"{candidate}_{index}"
+                used_names.add(candidate)
+                quadrant.id = candidate
+                renamed_quadrants[candidate] = quadrant
+            gate.quadrants = renamed_quadrants
         self.gating_strategy.add_gate(gate, parent_path)
         full_path = parent_path + (gate.gate_name,)
         if "/".join(full_path) not in self.gate_colors:
@@ -406,7 +480,7 @@ class AnalysisSession:
     def remove_gate(
         self, full_path: tuple[str, ...], keep_children: bool = False
     ) -> None:
-        full_path = tuple(full_path)
+        full_path = self.gate_owner_path(tuple(full_path))
         self.gating_strategy.remove_gate(
             full_path[-1], gate_path=full_path[:-1], keep_children=keep_children
         )
@@ -563,6 +637,17 @@ class AnalysisSession:
         results = self._results.get(record.id)
         if results is None:
             results = self.gate_sample(record)
+        node = self.gate_node_by_path(full_path)
+        if node is not None and isinstance(node.gate, fk_gates.QuadrantGate):
+            # A QuadrantGate itself is not a population; its quadrants are.
+            # Opening the parent shows the union of every quadrant.
+            membership = None
+            for quadrant_id in node.gate.quadrants:
+                part = results.get_gate_membership(quadrant_id, full_path)
+                membership = part if membership is None else (membership | part)
+            if membership is None:
+                return np.zeros(record.event_count, dtype=bool)
+            return membership
         return results.get_gate_membership(full_path[-1], full_path[:-1])
 
     def has_gates(self) -> bool:
@@ -572,6 +657,8 @@ class AnalysisSession:
         channels: list[str] = []
         seen: set[str] = set()
         for node, _path in self.iter_gate_nodes():
+            if isinstance(node.gate, fk_gates.Quadrant):
+                continue
             for channel in gate_dimension_ids(node.gate):
                 if channel and channel not in seen:
                     seen.add(channel)
@@ -581,6 +668,29 @@ class AnalysisSession:
     def missing_gate_channels(self, record: SampleRecord) -> list[str]:
         available = {channel.pnn for channel in record.channels}
         return [channel for channel in self.gate_channel_ids() if channel not in available]
+
+    def _report_population_path(
+        self,
+        gate_path: tuple[str, ...],
+        gate_name: str,
+        gate_type: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Resolve a FlowKit report row to (population path, parent gate path).
+
+        FlowKit reports quadrant memberships as though they were children of
+        the QuadrantGate's parent, so the parent gate name must be inserted
+        back into the path for the UI tree and statistics table.
+        """
+
+        if gate_type == "QuadrantGate":
+            for node, path in self.iter_gate_nodes():
+                if path[:-1] != gate_path:
+                    continue
+                if isinstance(node.gate, fk_gates.QuadrantGate) and (
+                    gate_name in node.gate.quadrants
+                ):
+                    return path + (gate_name,), path
+        return gate_path + (gate_name,), gate_path
 
     def population_stats(
         self,
@@ -607,9 +717,12 @@ class AnalysisSession:
                 gate_path = tuple(gate_path.split("/"))
             else:
                 gate_path = tuple(gate_path)
-            full_path = gate_path + (name,)
+            gate_type = str(row.get("gate_type", ""))
+            full_path, membership_parent = self._report_population_path(
+                gate_path, name, gate_type
+            )
             try:
-                membership = results.get_gate_membership(name, gate_path)
+                membership = results.get_gate_membership(name, membership_parent)
             except Exception:
                 membership = None
 
@@ -624,7 +737,7 @@ class AnalysisSession:
                 PopulationStat(
                     gate_name=name,
                     full_path=full_path,
-                    gate_type=str(row.get("gate_type", "")),
+                    gate_type=gate_type,
                     count=int(row["count"]),
                     percent_parent=float(row["relative_percent"]),
                     percent_total=float(row["absolute_percent"]),
@@ -651,7 +764,19 @@ class AnalysisSession:
                 gate_path = tuple(gate_path.split("/"))
             else:
                 gate_path = tuple(gate_path)
-            counts["/".join(gate_path + (name,))] = int(row["count"])
+            full_path, _parent = self._report_population_path(
+                gate_path, name, str(row.get("gate_type", ""))
+            )
+            counts["/".join(full_path)] = int(row["count"])
+
+        # QuadrantGate parents are not populations in FlowKit's report, but the
+        # tree is clearer when they show the combined count of their quadrants.
+        for node, path in self.iter_gate_nodes():
+            if isinstance(node.gate, fk_gates.QuadrantGate):
+                counts["/".join(path)] = sum(
+                    counts.get("/".join(path + (quadrant_id,)), 0)
+                    for quadrant_id in node.gate.quadrants
+                )
         return counts
 
     def all_population_counts(self) -> dict[str, dict[str, int]]:

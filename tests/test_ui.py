@@ -152,7 +152,7 @@ def test_histogram_mode(qtbot):
     window.session.add_record(record)
     window.activate_sample(record.id)
     panel = window.plot_grid.active()
-    assert panel.tool == GateTool.ELLIPSE
+    assert panel.tool == GateTool.POLYGON
     window.set_mode("histogram")
     assert panel.mode == "histogram"
     assert panel._hist_counts is not None
@@ -161,7 +161,7 @@ def test_histogram_mode(qtbot):
     assert window.tool_actions[GateTool.RANGE].isEnabled()
     window.set_mode("scatter")
     assert window.tool_actions[GateTool.RECTANGLE].isEnabled()
-    assert panel.tool == GateTool.ELLIPSE
+    assert panel.tool == GateTool.POLYGON
     window._set_dirty(False)
 
 
@@ -237,6 +237,7 @@ def test_double_click_child_gate(qtbot, monkeypatch):
     assert window.gate_parent_path == parent_path
 
     # Draw the child ellipse inside the parent.
+    window.set_gate_tool("ellipse")
     child_start = point(x0 + (x1 - x0) * 0.3, y0 + (y1 - y0) * 0.3)
     child_end = point(x0 + (x1 - x0) * 0.6, y0 + (y1 - y0) * 0.6)
     QtTest.QTest.mousePress(
@@ -747,6 +748,206 @@ def test_batch_gating_and_overlay(qtbot):
     window.gate_tree._on_item_clicked(other_sample.child(0), 0)
     assert window.current_sample_id == other_sample_id
     assert window.selected_gate_path == ("root", "Batch")
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_quadrant_tool_creates_four_populations(qtbot, monkeypatch):
+    from PySide6 import QtCore, QtTest
+
+    from cytodesk.plotting import GateTool
+    from cytodesk.ui import main_window as mw
+
+    monkeypatch.setattr(
+        mw.QtWidgets.QInputDialog,
+        "getText",
+        staticmethod(lambda *args, **kwargs: ("Quad", True)),
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+    window.set_gate_tool(GateTool.QUADRANT)
+
+    view = panel.plot_item.vb.viewRange()
+    x = (view[0][0] + view[0][1]) / 2.0
+    y = (view[1][0] + view[1][1]) / 2.0
+    scene_pos = panel.plot_item.vb.mapToScene(
+        panel.plot_item.vb.mapFromView(QtCore.QPointF(x, y))
+    )
+    viewport_pos = panel.plot_widget.mapFromScene(scene_pos)
+    QtTest.QTest.mouseClick(
+        panel.plot_widget.viewport(),
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoModifier,
+        viewport_pos,
+    )
+
+    parent_path = ("root", "Quad")
+    assert parent_path in window.session.gate_full_paths()
+    parent_child_paths = [
+        parent_path + (quadrant_id,)
+        for quadrant_id in ("Q1", "Q2", "Q3", "Q4")
+    ]
+    for path in parent_child_paths:
+        assert path in window.session.gate_full_paths()
+        assert path in panel._gate_items
+    assert window.stats_table.table.rowCount() == 4
+    assert any("Q1" in label.toPlainText() for label in panel._gate_labels)
+
+    window.open_population(parent_child_paths[0])
+    assert window.current_population_path == parent_child_paths[0]
+    membership = window.session.gate_membership(record, parent_child_paths[0])
+    assert len(panel._x) == int(membership.sum())
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not COMP_FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_fluorescence_axes_use_decade_ticks(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(COMP_FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+    channels = [
+        channel.pnn
+        for channel in record.transform_candidates()
+        if not channel.is_scatter and not channel.is_time
+    ][:2]
+    assert len(channels) == 2
+    panel.set_channels(channels[0], channels[1])
+
+    for axis, index in ((panel.x_axis, 0), (panel.y_axis, 1)):
+        lo, hi = panel.plot_item.vb.viewRange()[index]
+        labels: list[str] = []
+        for spacing, values in axis.tickValues(lo, hi, 500):
+            labels.extend(axis.tickStrings(values, 1.0, spacing))
+        decade_labels = [label for label in labels if label.startswith("10")]
+        assert decade_labels
+        assert all(
+            label.split("10", 1)[1]
+            and set(label.split("10", 1)[1]).issubset(
+                set("⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+            )
+            for label in decade_labels
+        )
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_DIR.exists(), reason="FlowKit example data not available")
+def test_multi_sample_root_bounds_cover_every_file(qtbot):
+    import numpy as np
+
+    files = sorted(FCS_DIR.glob("*.fcs"))[:2]
+    if len(files) < 2:
+        pytest.skip("需要两个 FlowKit 示例样本")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    for path in files:
+        window.session.add_record(load_sample_file(path))
+    first_id = next(iter(window.session.samples))
+    window.activate_sample(first_id)
+    panel = window.plot_grid.active()
+
+    for record in window.session.samples.values():
+        matrix, _ = window.session.transformed_matrix(
+            record, [panel.x_channel, panel.y_channel]
+        )
+        for channel, bounds in (
+            (panel.x_channel, panel._x_bounds),
+            (panel.y_channel, panel._y_bounds),
+        ):
+            values = matrix[channel]
+            values = values[np.isfinite(values)]
+            lo, hi = np.percentile(values, [0.1, 99.9])
+            assert bounds[0] <= lo
+            assert bounds[1] >= hi
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not COMP_FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_selecting_gate_switches_to_its_definition_view(qtbot):
+    import numpy as np
+
+    from cytodesk.core.gates import make_range_gate, make_rectangle_gate
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(COMP_FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+
+    panel.set_channels("FSC-A", "SSC-A")
+    matrix, _ = window.session.transformed_matrix(record, ["FSC-A", "SSC-A"])
+    x0, x1 = np.percentile(matrix["FSC-A"], [20, 80])
+    y0, y1 = np.percentile(matrix["SSC-A"], [20, 80])
+    parent = make_rectangle_gate(
+        "ParentView",
+        "FSC-A",
+        "SSC-A",
+        (float(x0), float(x1)),
+        (float(y0), float(y1)),
+        window.session.get_transform_id("FSC-A"),
+        window.session.get_transform_id("SSC-A"),
+    )
+    parent_path = window.session.add_gate(parent, ("root",))
+    window._run_gating(record)
+
+    child_channel = "CD4 PE-Cy7 FLR-A"
+    matrix, _ = window.session.transformed_matrix(
+        record, ["FSC-A", child_channel]
+    )
+    cx0, cx1 = np.percentile(matrix["FSC-A"], [30, 70])
+    cy0, cy1 = np.percentile(matrix[child_channel], [30, 70])
+    child = make_rectangle_gate(
+        "ChildView",
+        "FSC-A",
+        child_channel,
+        (float(cx0), float(cx1)),
+        (float(cy0), float(cy1)),
+        window.session.get_transform_id("FSC-A"),
+        window.session.get_transform_id(child_channel),
+    )
+    child_path = window.session.add_gate(child, parent_path)
+    window._run_gating(record)
+    window.gate_tree.refresh()
+    window.plot_grid.refresh_gates()
+
+    window.open_population(None)
+    panel.set_channels("FSC-A", "SSC-A")
+    child_item = window.gate_tree._item_map[(record.id, child_path)]
+    window.gate_tree._on_item_clicked(child_item, 0)
+    assert window.current_population_path == parent_path
+    assert panel.x_channel == "FSC-A"
+    assert panel.y_channel == child_channel
+    assert panel.mode == "scatter"
+
+    matrix, _ = window.session.transformed_matrix(record, [child_channel])
+    r0, r1 = np.percentile(matrix[child_channel], [40, 60])
+    range_gate = make_range_gate(
+        "OneDView",
+        child_channel,
+        (float(r0), float(r1)),
+        window.session.get_transform_id(child_channel),
+    )
+    range_path = window.session.add_gate(range_gate, ("root",))
+    window._run_gating(record)
+    window.gate_tree.refresh()
+    range_item = window.gate_tree._item_map[(record.id, range_path)]
+    window.gate_tree._on_item_clicked(range_item, 0)
+    assert window.current_population_path is None
+    assert panel.mode == "histogram"
+    assert panel.x_channel == child_channel
     window._set_dirty(False)
 
 

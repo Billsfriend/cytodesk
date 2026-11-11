@@ -5,6 +5,7 @@ GATE_TYPE_LABELS = {
     "PolygonGate": "多边形",
     "EllipsoidGate": "椭圆",
     "QuadrantGate": "象限",
+    "Quadrant": "象限群体",
     "BooleanGate": "布尔",
 }
 

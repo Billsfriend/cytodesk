@@ -6,10 +6,14 @@ import pytest
 from cytodesk.core.gates import (
     gate_bounds,
     gate_handle_points,
+    gate_to_dict,
     make_ellipse_gate,
     make_polygon_gate,
+    make_quadrant_gate,
     make_range_gate,
     make_rectangle_gate,
+    quadrant_divider_values,
+    quadrant_region_bounds,
     set_gate_vertex,
     translate_gate,
 )
@@ -163,6 +167,68 @@ def test_nested_gate(session):
     assert sess.rename_gate(("root", "Parent"), "P2") == ("root", "P2")
     assert sess.gate_by_path(("root", "P2")) is not None
     sess.remove_gate(("root", "P2"))
+    assert not sess.gate_full_paths()
+
+
+def test_quadrant_gate_membership_and_serialization(session):
+    sess, rec = session
+    x_channel, y_channel = _two_channels(rec)
+    matrix, _ = sess.transformed_matrix(rec, [x_channel, y_channel])
+    x_divider = float(np.median(matrix[x_channel]))
+    y_divider = float(np.median(matrix[y_channel]))
+    gate = make_quadrant_gate(
+        "Quad",
+        x_channel,
+        y_channel,
+        x_divider,
+        y_divider,
+        sess.get_transform_id(x_channel),
+        sess.get_transform_id(y_channel),
+    )
+    path = sess.add_gate(gate, ("root",))
+    assert path == ("root", "Quad")
+    assert sess.gate_full_paths() == [
+        ("root", "Quad"),
+        ("root", "Quad", "Q1"),
+        ("root", "Quad", "Q2"),
+        ("root", "Quad", "Q3"),
+        ("root", "Quad", "Q4"),
+    ]
+    assert quadrant_divider_values(gate) == pytest.approx((x_divider, y_divider))
+
+    results = sess.gate_sample(rec)
+    total = 0
+    for quadrant_id in ("Q1", "Q2", "Q3", "Q4"):
+        membership = results.get_gate_membership(quadrant_id, path)
+        total += int(membership.sum())
+        assert sess.gate_by_path(path + (quadrant_id,)) is gate
+    assert total == rec.event_count
+
+    stats = sess.population_stats(rec, [x_channel, y_channel])
+    assert {stat.full_path for stat in stats} == {
+        path + (quadrant_id,)
+        for quadrant_id in ("Q1", "Q2", "Q3", "Q4")
+    }
+    counts = sess.population_counts(rec)
+    assert counts["root/Quad"] == rec.event_count
+    assert sum(
+        counts[f"root/Quad/{quadrant_id}"]
+        for quadrant_id in ("Q1", "Q2", "Q3", "Q4")
+    ) == rec.event_count
+
+    bounds = quadrant_region_bounds(gate, gate.quadrants["Q1"])
+    assert bounds is not None and bounds[1] == pytest.approx(x_divider)
+    translate_gate(gate, 0.1, 0.2)
+    assert quadrant_divider_values(gate) == pytest.approx(
+        (x_divider + 0.1, y_divider + 0.2)
+    )
+
+    restored = gate_to_dict(gate)
+    assert restored["type"] == "QuadrantGate"
+    assert len(restored["quadrants"]) == 4
+
+    # Removing a quadrant removes the owning QuadrantGate.
+    sess.remove_gate(path + ("Q1",))
     assert not sess.gate_full_paths()
 
 

@@ -25,8 +25,21 @@ class TransformEditor(QtWidgets.QGroupBox):
         self.channel_label = QtWidgets.QLabel("—")
         self.channel_label.setStyleSheet("color:#666;")
         self.kind_combo = QtWidgets.QComboBox()
+        kind_tooltips = {
+            "logicle": "Logicle：流式最常用。零点附近近似线性，高值区接近对数，负值和 0 也能显示。",
+            "linear": "Linear：线性坐标，适合散射光、时间等通道。",
+            "asinh": "Asinh：反双曲正弦，负值和 0 也能显示，常见于 CyTOF 数据。",
+            "log": "Log：纯对数坐标，只能显示大于 0 的值，不能显示负值。",
+            "hyperlog": "Hyperlog：与 Logicle 类似的 log-like 变换，低值区线性、高值区对数，参数化方式不同。",
+        }
         for kind, label in KIND_LABELS.items():
             self.kind_combo.addItem(label, kind)
+            self.kind_combo.setItemData(
+                self.kind_combo.count() - 1,
+                kind_tooltips.get(kind, ""),
+                QtCore.Qt.ToolTipRole,
+            )
+        self.kind_combo.setToolTip("选择通道的坐标变换类型")
         self.kind_combo.activated.connect(self._on_kind_changed)
 
         self.param_widgets: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -41,17 +54,32 @@ class TransformEditor(QtWidgets.QGroupBox):
         self.param_widgets = {"t": self.spin_t, "w": self.spin_w, "m": self.spin_m, "a": self.spin_a}
         self._param_labels: dict[str, QtWidgets.QLabel] = {}
         param_titles = {
-            "t": "T (top of scale)",
-            "w": "W (linear decades)",
-            "m": "M (decades)",
-            "a": "A (negative decades)",
+            "t": "T 量程上限",
+            "w": "W 线性区宽度",
+            "m": "M 对数区范围",
+            "a": "A 负值范围",
+        }
+        param_tooltips = {
+            "t": "Top of scale：坐标量程上限，通常取 FCS 的 $PnR。修改后整个坐标映射都会缩放。",
+            "w": "W（单位 decade）：零点附近近似线性区域的宽度；W 越大，低值和负值区越接近线性。",
+            "m": "M（单位 decade）：高值区覆盖的 10 倍数量级个数。M=4.5 约等于 10^4.5 的范围。",
+            "a": "A（单位 decade）：零点以下额外保留的 10 倍数量级范围。",
         }
         for key in ("t", "w", "m", "a"):
             label = QtWidgets.QLabel(param_titles[key])
+            label.setToolTip(param_tooltips[key])
+            self.param_widgets[key].setToolTip(param_tooltips[key])
             self._param_labels[key] = label
             self._form.addRow(label, self.param_widgets[key])
 
+        self.decade_hint = QtWidgets.QLabel("1 decade = 10 倍（一个数量级）")
+        self.decade_hint.setStyleSheet("color:#777; font-size:9pt;")
+        self.decade_hint.setToolTip(
+            "decade 即 10 倍。例如 10¹→10² 为一个 decade；荧光通道默认按 10 的整数次方显示刻度。"
+        )
+
         self.apply_button = QtWidgets.QPushButton("应用变换")
+        self.apply_button.setToolTip("应用后重新计算该通道的坐标变换，并重新执行门控")
         self.apply_button.clicked.connect(self._on_apply)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -63,6 +91,7 @@ class TransformEditor(QtWidgets.QGroupBox):
         form.addRow("类型", self.kind_combo)
         layout.addLayout(form)
         layout.addLayout(self._form)
+        layout.addWidget(self.decade_hint)
         layout.addWidget(self.apply_button)
 
     @staticmethod
@@ -389,8 +418,17 @@ class InspectorPanel(QtWidgets.QWidget):
             self.gate_color_button.setStyleSheet("")
             return
         self.gate_path_label.setText(" / ".join(path[1:]) if path else "")
-        self.gate_type_label.setText(gate_type_label(getattr(gate, "gate_type", type(gate).__name__)))
-        self.gate_name_edit.setText(getattr(gate, "gate_name", ""))
+        type_name = getattr(gate, "gate_type", type(gate).__name__)
+        display_name = getattr(gate, "gate_name", "")
+        if (
+            type_name == "QuadrantGate"
+            and path
+            and path[-1] in getattr(gate, "quadrants", {})
+        ):
+            type_name = "Quadrant"
+            display_name = path[-1]
+        self.gate_type_label.setText(gate_type_label(type_name))
+        self.gate_name_edit.setText(display_name)
         if color:
             self.gate_color_button.setStyleSheet(
                 f"background-color: {color}; color: white; border-radius: 3px; padding: 3px 8px;"

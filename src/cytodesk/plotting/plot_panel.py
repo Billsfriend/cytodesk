@@ -17,6 +17,8 @@ from ..core.gates import (
     gate_dimension_ids,
     gate_handle_points,
     gate_type,
+    quadrant_divider_values,
+    quadrant_region_bounds,
     set_gate_vertex,
     translate_gate,
 )
@@ -32,32 +34,144 @@ class GateTool(str, Enum):
     POLYGON = "polygon"
     ELLIPSE = "ellipse"
     RANGE = "range"
+    QUADRANT = "quadrant"
+
+
+DECADE_KINDS = {"logicle", "log", "hyperlog", "asinh"}
+SUPERSCRIPT_TRANSLATION = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _decade_label(exponent: int) -> str:
+    if exponent == 0:
+        return "1"
+    return "10" + str(int(exponent)).translate(SUPERSCRIPT_TRANSLATION)
 
 
 class TransformedAxis(pg.AxisItem):
-    """An axis whose tick labels show inverse-transformed (raw) values."""
+    """An axis whose tick labels show inverse-transformed (raw) values.
+
+    Log-like fluorescence axes use fixed powers of ten (10¹, 10², 10³, …)
+    rather than evenly spaced transformed tick values.  This keeps the labels
+    stable when the transform's top of scale changes.
+    """
 
     def __init__(self, spec, orientation: str):
         super().__init__(orientation=orientation)
         self._spec = spec
         self._transform = spec.build() if spec is not None else None
+        self._decade_ticks = bool(
+            spec is not None and getattr(spec, "kind", None) in DECADE_KINDS
+        )
+        self._decade_ticks_active = False
         self.enableAutoSIPrefix(False)
 
     def set_spec(self, spec) -> None:
         self._spec = spec
         self._transform = spec.build() if spec is not None else None
+        self._decade_ticks = bool(
+            spec is not None and getattr(spec, "kind", None) in DECADE_KINDS
+        )
+        self._decade_ticks_active = False
+        # AxisItem caches its tick picture; invalidate it so a changed
+        # transform really redraws every tick label and position.
+        self.picture = None
         self.update()
+
+    def _inverse_value(self, value: float) -> float | None:
+        if self._transform is None:
+            return None
+        try:
+            raw = float(
+                self._transform.inverse(np.array([[float(value)]]))[0][0]
+            )
+        except Exception:
+            return None
+        return raw if math.isfinite(raw) else None
+
+    def _transform_value(self, raw: float) -> float | None:
+        if self._transform is None:
+            return None
+        try:
+            value = float(
+                self._transform.apply(np.array([[float(raw)]]))[0][0]
+            )
+        except Exception:
+            return None
+        return value if math.isfinite(value) else None
+
+    def tickValues(self, minVal: float, maxVal: float, size: float):
+        self._decade_ticks_active = False
+        if self._decade_ticks:
+            ticks = self._decade_tick_values(minVal, maxVal)
+            if ticks:
+                self._decade_ticks_active = True
+                return ticks
+        return super().tickValues(minVal, maxVal, size)
+
+    def _decade_tick_values(self, minVal: float, maxVal: float):
+        lo, hi = sorted((float(minVal), float(maxVal)))
+        if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
+            return None
+        raw_lo = self._inverse_value(lo)
+        raw_hi = self._inverse_value(hi)
+        if raw_lo is None or raw_hi is None:
+            return None
+        low_raw, high_raw = sorted((raw_lo, raw_hi))
+        if high_raw <= 0:
+            return None
+
+        start_exp = (
+            int(math.floor(math.log10(low_raw))) - 1 if low_raw > 0 else 0
+        )
+        end_exp = int(math.ceil(math.log10(high_raw))) + 1
+        if end_exp - start_exp > 14:
+            # Keep the axis readable for unusually wide ranges.
+            step = int(math.ceil((end_exp - start_exp) / 12))
+            exponents = list(range(start_exp, end_exp + 1, step))
+        else:
+            exponents = list(range(start_exp, end_exp + 1))
+
+        major_values: list[float] = []
+        for exponent in exponents:
+            value = self._transform_value(10.0**exponent)
+            if value is not None and lo <= value <= hi:
+                major_values.append(value)
+
+        minor_values: list[float] = []
+        for exponent in range(start_exp, end_exp):
+            for mantissa in range(2, 10):
+                value = self._transform_value(mantissa * 10.0**exponent)
+                if value is not None and lo <= value <= hi:
+                    minor_values.append(value)
+
+        if not major_values and not minor_values:
+            return None
+        span = max(hi - lo, 1e-12)
+        levels = []
+        if major_values:
+            levels.append((span / max(len(major_values), 1), sorted(set(major_values))))
+        if minor_values:
+            levels.append((span / max(len(minor_values), 1), sorted(set(minor_values))))
+        return levels or None
 
     def tickStrings(self, values, scale, spacing):
         if self._transform is None:
             return ["" for _ in values]
         out = []
         for value in values:
-            try:
-                raw = float(self._transform.inverse(np.array([[float(value)]]))[0][0])
-                out.append(nice_number(raw))
-            except Exception:
+            raw = self._inverse_value(float(value))
+            if raw is None:
                 out.append("")
+                continue
+            if self._decade_ticks_active and raw > 0:
+                exponent = math.log10(raw)
+                nearest = int(round(exponent))
+                if abs(exponent - nearest) <= 1e-5:
+                    out.append(_decade_label(nearest))
+                    continue
+                out.append("")
+                continue
+            out.append(nice_number(raw))
         return out
 
 
@@ -109,7 +223,7 @@ class PlotPanel(QtWidgets.QWidget):
         self.x_channel: str | None = None
         self.y_channel: str | None = None
         self.mode = "scatter"
-        self.tool = GateTool.ELLIPSE
+        self.tool = GateTool.POLYGON
         self.show_contours = True
         self.selected_gate_path: tuple[str, ...] | None = None
         self.overlay_records: list[SampleRecord] | None = None
@@ -131,6 +245,10 @@ class PlotPanel(QtWidgets.QWidget):
         self._gate_labels: list[pg.TextItem] = []
         self._handle_items: list[tuple[int, QtWidgets.QGraphicsEllipseItem]] = []
         self._contour_items: list[QtWidgets.QGraphicsPathItem] = []
+        self._pooled_bounds_cache: dict[
+            tuple[str, str, tuple[str, ...]],
+            tuple[tuple[float, float], tuple[float, float]],
+        ] = {}
 
         self._drawing = False
         self._draw_start: QtCore.QPointF | None = None
@@ -217,7 +335,7 @@ class PlotPanel(QtWidgets.QWidget):
             if self.tool != GateTool.RANGE:
                 self.set_tool(GateTool.RANGE)
         elif self.tool == GateTool.RANGE:
-            self.set_tool(GateTool.ELLIPSE)
+            self.set_tool(GateTool.POLYGON)
         if self.overlay_records and len(self._x):
             self._render_overlay_events()
         elif mode == "density" and len(self._x):
@@ -336,6 +454,7 @@ class PlotPanel(QtWidgets.QWidget):
         self.refresh_gates()
 
     def refresh_events(self) -> None:
+        self._pooled_bounds_cache.clear()
         if self.record is not None and self.x_channel and self.y_channel:
             self._load_events()
             self._update_axes()
@@ -358,6 +477,7 @@ class PlotPanel(QtWidgets.QWidget):
         self.record = None
         self.overlay_records = None
         self._overlay_series = []
+        self._pooled_bounds_cache.clear()
         self._clear_overlay_items()
         self._x = np.empty(0)
         self._y = np.empty(0)
@@ -478,6 +598,54 @@ class PlotPanel(QtWidgets.QWidget):
                 lo, hi = lo - 0.5, hi + 0.5
             pad = (hi - lo) * 0.04
             return float(lo - pad), float(hi + pad)
+
+        if (
+            not self.overlay_records
+            and self._population_path is None
+            and self.record is not None
+            and len(self.session.samples) > 1
+            and self.x_channel
+            and self.y_channel
+        ):
+            cache_key = (
+                self.x_channel,
+                self.y_channel,
+                tuple(self.session.samples),
+            )
+            cached = self._pooled_bounds_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            x_ranges: list[tuple[float, float]] = []
+            y_ranges: list[tuple[float, float]] = []
+            for record in self.session.samples.values():
+                if record is self.record:
+                    sample_x, sample_y = x, y
+                else:
+                    available = {channel.pnn for channel in record.channels}
+                    if (
+                        self.x_channel not in available
+                        or self.y_channel not in available
+                    ):
+                        continue
+                    try:
+                        matrix, _ = self.session.transformed_matrix(
+                            record, [self.x_channel, self.y_channel]
+                        )
+                    except Exception:
+                        continue
+                    sample_x = np.asarray(matrix[self.x_channel], dtype=float)
+                    sample_y = np.asarray(matrix[self.y_channel], dtype=float)
+                if len(sample_x) == 0:
+                    continue
+                x_ranges.append(bounds(sample_x))
+                y_ranges.append(bounds(sample_y))
+            if x_ranges and y_ranges:
+                pooled = (
+                    (min(r[0] for r in x_ranges), max(r[1] for r in x_ranges)),
+                    (min(r[0] for r in y_ranges), max(r[1] for r in y_ranges)),
+                )
+                self._pooled_bounds_cache[cache_key] = pooled
+                return pooled
 
         return bounds(x), bounds(y)
 
@@ -801,6 +969,10 @@ class PlotPanel(QtWidgets.QWidget):
             if full_path[:-1] != (self._population_path or ("root",)):
                 continue
             gate = node.gate
+            if gate_type(gate) == "Quadrant":
+                # Quadrant children are rendered as part of their owning
+                # QuadrantGate below.
+                continue
             ids = gate_dimension_ids(gate)
             if self.mode == "histogram":
                 if len(ids) != 1 or ids[0] != self.x_channel:
@@ -810,6 +982,9 @@ class PlotPanel(QtWidgets.QWidget):
             ):
                 continue
             color = self.session.gate_color(full_path)
+            if gate_type(gate) == "QuadrantGate":
+                self._render_quadrant_gate(full_path, gate, color)
+                continue
             selected = self.selected_gate_path == full_path
             path_item = QtWidgets.QGraphicsPathItem()
             path_item.setPen(
@@ -858,6 +1033,78 @@ class PlotPanel(QtWidgets.QWidget):
 
             if selected:
                 self._add_handles(full_path, gate, color)
+
+    def _render_quadrant_gate(self, full_path, gate, color: str) -> None:
+        values = quadrant_divider_values(gate)
+        if values is None:
+            return
+        x_divider, y_divider = values
+        view = self.plot_item.vb.viewRange()
+        vx0, vx1 = float(view[0][0]), float(view[0][1])
+        vy0, vy1 = float(view[1][0]), float(view[1][1])
+
+        selected = self.selected_gate_path == full_path
+        crosshair = QtGui.QPainterPath()
+        crosshair.moveTo(x_divider, vy0)
+        crosshair.lineTo(x_divider, vy1)
+        crosshair.moveTo(vx0, y_divider)
+        crosshair.lineTo(vx1, y_divider)
+        line_item = QtWidgets.QGraphicsPathItem(crosshair)
+        line_item.setPen(
+            pg.mkPen(color, width=3.0 if selected else 2.2, cosmetic=True)
+        )
+        line_item.setBrush(pg.mkBrush(0, 0, 0, 0))
+        line_item.setZValue(11)
+        self.plot_item.addItem(line_item, ignoreBounds=True)
+        self._gate_items[full_path] = line_item
+
+        for quadrant_id, quadrant in gate.quadrants.items():
+            child_path = full_path + (quadrant_id,)
+            bounds = quadrant_region_bounds(gate, quadrant)
+            if bounds is None:
+                continue
+            x0, x1, y0, y1 = bounds
+            x0 = vx0 if x0 is None else max(vx0, min(float(x0), vx1))
+            x1 = vx1 if x1 is None else max(vx0, min(float(x1), vx1))
+            y0 = vy0 if y0 is None else max(vy0, min(float(y0), vy1))
+            y1 = vy1 if y1 is None else max(vy0, min(float(y1), vy1))
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            child_selected = self.selected_gate_path == child_path
+            region_path = QtGui.QPainterPath()
+            region_path.addRect(QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
+            region = QtWidgets.QGraphicsPathItem(region_path)
+            if child_selected:
+                region.setPen(
+                    pg.mkPen(color, width=3.0, cosmetic=True)
+                )
+                region.setBrush(pg.mkBrush(_qcolor(color, 45)))
+            else:
+                region.setPen(pg.mkPen(None))
+                region.setBrush(pg.mkBrush(0, 0, 0, 0))
+            region.setZValue(9)
+            self.plot_item.addItem(region, ignoreBounds=True)
+            self._gate_items[child_path] = region
+
+            label_text = quadrant_id
+            percent = self._gate_percentages.get("/".join(child_path))
+            if percent is not None:
+                label_text = f"{label_text}  {percent:.2f}% parent"
+            label = pg.TextItem(
+                text=label_text,
+                color=color,
+                anchor=(0.0, 1.0),
+                fill=pg.mkBrush(255, 255, 255, 200),
+                border=pg.mkPen(_qcolor(color, 110)),
+            )
+            label.setZValue(20)
+            self.plot_item.addItem(label, ignoreBounds=True)
+            label.setPos(
+                x0 + (x1 - x0) * 0.03,
+                y1 - (y1 - y0) * 0.04,
+            )
+            self._gate_labels.append(label)
 
     def _update_gate_item_geometry(self, full_path, gate, item) -> None:
         gtype = gate_type(gate)
@@ -977,6 +1224,18 @@ class PlotPanel(QtWidgets.QWidget):
         if button != QtCore.Qt.LeftButton:
             return False
 
+        if self.tool == GateTool.QUADRANT:
+            if double or not self.x_channel or not self.y_channel:
+                return True
+            self.gate_drawn.emit(
+                {
+                    "type": "quadrant",
+                    "channels": [self.x_channel, self.y_channel],
+                    "dividers": [float(pos.x()), float(pos.y())],
+                }
+            )
+            return True
+
         if self.tool == GateTool.POLYGON:
             if double:
                 if self._polygon_points:
@@ -1028,7 +1287,7 @@ class PlotPanel(QtWidgets.QWidget):
                     self._drag_handle = None
                     self._drag_last = (float(start_pos.x()), float(start_pos.y()))
                     return True
-            if self.tool == GateTool.POLYGON:
+            if self.tool in {GateTool.POLYGON, GateTool.QUADRANT}:
                 return False
             return self._shape_drag(ev)
         if self._drag_gate is not None:
@@ -1243,7 +1502,7 @@ class PlotPanel(QtWidgets.QWidget):
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Escape:
             self.cancel_drawing()
-            self.set_tool(GateTool.RANGE if self.mode == "histogram" else GateTool.ELLIPSE)
+            self.set_tool(GateTool.RANGE if self.mode == "histogram" else GateTool.POLYGON)
             return
         if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
             if self._polygon_points:

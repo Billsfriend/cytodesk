@@ -7,6 +7,7 @@ from typing import Any, Iterable
 import numpy as np
 from flowkit import gates as fk_gates
 from flowkit import Dimension
+from flowkit._models.dimension import QuadrantDivider
 
 
 def make_dimension(
@@ -90,11 +91,76 @@ def make_ellipse_gate(
     )
 
 
+def make_quadrant_gate(
+    name: str,
+    x_channel: str,
+    y_channel: str,
+    x_divider: float,
+    y_divider: float,
+    x_transform: str,
+    y_transform: str,
+    quadrant_ids: Iterable[str] = ("Q1", "Q2", "Q3", "Q4"),
+) -> fk_gates.QuadrantGate:
+    """Create a two-divider, four-quadrant gate in transformed coordinates."""
+
+    ids = list(quadrant_ids)
+    if len(ids) != 4:
+        raise ValueError("Quadrant gates require exactly four quadrant IDs")
+    x = float(x_divider)
+    y = float(y_divider)
+    div_x = QuadrantDivider("div_x", x_channel, "FCS", [x], x_transform)
+    div_y = QuadrantDivider("div_y", y_channel, "FCS", [y], y_transform)
+    quadrants = [
+        # Upper-left, upper-right, lower-right, lower-left.
+        fk_gates.Quadrant(ids[0], ["div_x", "div_y"], [(None, x), (y, None)]),
+        fk_gates.Quadrant(ids[1], ["div_x", "div_y"], [(x, None), (y, None)]),
+        fk_gates.Quadrant(ids[2], ["div_x", "div_y"], [(x, None), (None, y)]),
+        fk_gates.Quadrant(ids[3], ["div_x", "div_y"], [(None, x), (None, y)]),
+    ]
+    return fk_gates.QuadrantGate(name, [div_x, div_y], quadrants)
+
+
 def gate_dimension_ids(gate) -> list[str]:
     ids = []
     for dim in gate.dimensions or []:
-        ids.append(getattr(dim, "id", None) or getattr(dim, "dimension_ref", ""))
+        # A QuadrantDivider's ``id`` names the divider, not the channel; the
+        # actual channel is stored in ``dimension_ref``.
+        if hasattr(dim, "values"):
+            ids.append(dim.dimension_ref)
+        else:
+            ids.append(getattr(dim, "id", None) or getattr(dim, "dimension_ref", ""))
     return ids
+
+
+def quadrant_divider_values(gate) -> tuple[float, float] | None:
+    """Return the first divider on each axis for a 2-D quadrant gate."""
+
+    if gate_type(gate) != "QuadrantGate":
+        return None
+    dims = gate_dimensions(gate)
+    if len(dims) < 2 or not dims[0].values or not dims[1].values:
+        return None
+    return float(dims[0].values[0]), float(dims[1].values[0])
+
+
+def quadrant_region_bounds(gate, quadrant) -> tuple[float, float, float, float] | None:
+    """Return one quadrant's (x_min, x_max, y_min, y_max).
+
+    Unbounded sides are returned as ``None`` so the plot can substitute the
+    current view limits.
+    """
+
+    if gate_type(gate) != "QuadrantGate":
+        return None
+    dims = gate_dimensions(gate)
+    if len(dims) < 2:
+        return None
+    try:
+        x0, x1 = quadrant.get_divider_range(dims[0].id)
+        y0, y1 = quadrant.get_divider_range(dims[1].id)
+    except Exception:
+        return None
+    return x0, x1, y0, y1
 
 
 def gate_dimensions(gate) -> list[Dimension]:
@@ -191,6 +257,12 @@ def translate_gate(gate, dx: float, dy: float) -> None:
             float(gate.coordinates[0]) + dx,
             float(gate.coordinates[1]) + dy,
         ]
+    elif gtype == "QuadrantGate":
+        dims = gate_dimensions(gate)
+        if len(dims) >= 1:
+            dims[0].values = [float(value) + dx for value in dims[0].values]
+        if len(dims) >= 2:
+            dims[1].values = [float(value) + dy for value in dims[1].values]
 
 
 def set_gate_vertex(gate, index: int, x: float, y: float) -> None:
@@ -304,6 +376,27 @@ def gate_to_dict(gate) -> dict[str, Any]:
             [float(v) for v in row] for row in gate.covariance_matrix
         ]
         data["distance_square"] = float(gate.distance_square)
+    elif gtype == "QuadrantGate":
+        data["dividers"] = [
+            {
+                "id": dim.id,
+                "values": [float(v) for v in dim.values],
+            }
+            for dim in gate_dimensions(gate)
+        ]
+        data["quadrants"] = [
+            {
+                "id": quadrant.id,
+                "ranges": [
+                    [
+                        None if value is None else float(value)
+                        for value in quadrant.get_divider_range(dim.id)
+                    ]
+                    for dim in gate_dimensions(gate)
+                ],
+            }
+            for quadrant in gate.quadrants.values()
+        ]
     return data
 
 
@@ -337,4 +430,42 @@ def gate_from_dict(
             [[float(v) for v in row] for row in data["covariance"]],
             float(data["distance_square"]),
         )
+    if gtype == "QuadrantGate":
+        divider_data = data.get("dividers") or []
+        dividers = []
+        for i, ch in enumerate(channels):
+            values = (
+                divider_data[i].get("values", [])
+                if i < len(divider_data)
+                else []
+            )
+            dividers.append(
+                QuadrantDivider(
+                    divider_data[i].get("id", f"div{i}") if i < len(divider_data) else f"div{i}",
+                    ch,
+                    comp[i],
+                    [float(v) for v in values],
+                    xf[i],
+                )
+            )
+        divider_refs = [divider.id for divider in dividers]
+        quadrants = []
+        for quadrant_data in data.get("quadrants", []):
+            ranges = quadrant_data.get("ranges", [])
+            if len(ranges) < len(dividers):
+                ranges = list(ranges) + [[None, None]] * (len(dividers) - len(ranges))
+            quadrants.append(
+                fk_gates.Quadrant(
+                    quadrant_data["id"],
+                    divider_refs,
+                    [
+                        [
+                            None if value is None else float(value)
+                            for value in pair
+                        ]
+                        for pair in ranges
+                    ],
+                )
+            )
+        return fk_gates.QuadrantGate(name, dividers, quadrants)
     raise ValueError(f"Unsupported gate type for project files: {gtype}")
