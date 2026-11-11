@@ -3,7 +3,7 @@
 CytoDesk 是一个类似 FlowJo 的桌面流式细胞数据分析软件。界面使用
 PySide6 + pyqtgraph，分析内核使用 [FlowKit](https://github.com/whitews/flowkit)。
 
-当前版本为 **0.2.0（补偿矩阵 + 多样本批量分析）**。
+当前版本为 **0.3.0（象限门 + 坐标轴与视图改进）**。
 
 ![CytoDesk 主界面](docs/screenshot.png)
 
@@ -254,13 +254,14 @@ uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
 - macOS：`dist/CytoDesk.app`
 - Linux：`dist/CytoDesk/CytoDesk`
 
-推送 `0.2.0` 或 `v0.2.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
+推送 `0.3.0` 或 `v0.3.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
 普通 `main` 分支提交不会自动构建；需要在 Actions 中手动运行。
 详细说明见 `packaging/README.md`。
 
 ## 当前限制 / 后续计划
 
-0.2.0 已覆盖补偿矩阵编辑与多样本批量分析。以下功能在后续版本实现：
+0.3.0 已覆盖补偿矩阵编辑、多样本批量分析、十字四象限门、荧光通道固定
+10 的整数次方刻度、多样本合并初始范围和门树定义视图联动。以下功能在后续版本实现：
 
 - FlowJo `.wsp` 导入、GatingML 导入/导出
 - FCS / CSV 数据导出
