@@ -31,6 +31,48 @@ def test_main_window_smoke(qtbot):
 
 
 @pytest.mark.skipif(not FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_sample_loading_does_not_resolve_paths(qtbot, monkeypatch):
+    from pathlib import Path
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(FCS_PATH)
+
+    def fail_resolve(self):
+        raise AssertionError("Path.resolve() is too slow for sample loading")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    window._on_sample_loaded(record)
+    assert record.id in window.session.samples
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not COMP_FCS_PATH.exists(), reason="FlowKit example data not available")
+def test_scatter_auto_bounds_ignore_corrupt_negative_values(qtbot):
+    import numpy as np
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    record = load_sample_file(COMP_FCS_PATH)
+    window.session.add_record(record)
+    window.activate_sample(record.id)
+    panel = window.plot_grid.active()
+    panel.set_channels("FSC-A", "SSC-A")
+
+    x_bounds, y_bounds = panel._compute_bounds(
+        np.array([-22.0, 0.02, 0.5, 1.0]),
+        np.array([-1.0, 0.0, 0.5, 1.0]),
+    )
+    assert x_bounds[0] == 0.0
+    assert y_bounds[0] == 0.0
+    assert x_bounds[1] < 2.0
+    assert y_bounds[1] < 2.0
+    window._set_dirty(False)
+
+
+@pytest.mark.skipif(not FCS_PATH.exists(), reason="FlowKit example data not available")
 def test_window_activate_sample(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

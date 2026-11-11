@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -384,9 +385,12 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QThreadPool.globalInstance().start(worker)
 
     def _on_sample_loaded(self, record: SampleRecord) -> None:
-        # Ignore duplicates by path.
+        # Ignore duplicates by normalized path. Do not use Path.resolve()
+        # here: it stats every path component and is extremely slow on
+        # network/Seafile directories when many samples are loaded.
+        record_path = os.path.normcase(os.path.abspath(record.path))
         for existing in self.session.samples.values():
-            if existing.path.resolve() == record.path.resolve():
+            if os.path.normcase(os.path.abspath(existing.path)) == record_path:
                 self._update_status(f"{record.path.name} 已在工作区中")
                 return
         try:

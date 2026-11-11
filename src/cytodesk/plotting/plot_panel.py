@@ -583,6 +583,61 @@ class PlotPanel(QtWidgets.QWidget):
         self._render_events()
         self._set_view_bounds()
 
+    def _bounds_values(
+        self,
+        record: SampleRecord | None,
+        channel: str | None,
+        values: np.ndarray,
+    ) -> np.ndarray:
+        """Drop invalid negative scatter/time values from axis auto-ranging.
+
+        Some FCS files contain corrupt negative FSC/SSC values.  They remain
+        plotted when selected, but should not affect the automatic axis range.
+        """
+
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if record is None or not channel:
+            return finite
+        info = record.channel(channel)
+        spec = self.session.get_transform(channel)
+        if (
+            info is not None
+            and (info.is_scatter or info.is_time)
+            and spec.kind == "linear"
+        ):
+            non_negative = finite[finite >= 0]
+            if len(non_negative):
+                return non_negative
+        return finite
+
+    def _clamp_axis_bounds(
+        self, channel: str | None, axis_bounds: tuple[float, float]
+    ) -> tuple[float, float]:
+        """Keep linear scatter/time axes from starting at absurd negatives.
+
+        A few FCS files contain corrupt negative scatter values.  They are
+        still visible when the sample is selected, but they must not drag the
+        shared root-view axis below zero.
+        """
+
+        lo, hi = axis_bounds
+        if (
+            channel
+            and self.record is not None
+            and hi > 0
+            and lo < 0
+        ):
+            info = self.record.channel(channel)
+            spec = self.session.get_transform(channel)
+            if (
+                info is not None
+                and (info.is_scatter or info.is_time)
+                and spec.kind == "linear"
+            ):
+                lo = 0.0
+        return float(lo), float(hi)
+
     def _compute_bounds(self, x: np.ndarray, y: np.ndarray) -> tuple[tuple[float, float], tuple[float, float]]:
         if len(x) == 0:
             return (0.0, 1.0), (0.0, 1.0)
@@ -637,17 +692,50 @@ class PlotPanel(QtWidgets.QWidget):
                     sample_y = np.asarray(matrix[self.y_channel], dtype=float)
                 if len(sample_x) == 0:
                     continue
-                x_ranges.append(bounds(sample_x))
-                y_ranges.append(bounds(sample_y))
+                x_ranges.append(
+                    bounds(
+                        self._bounds_values(
+                            record, self.x_channel, sample_x
+                        )
+                    )
+                )
+                y_ranges.append(
+                    bounds(
+                        self._bounds_values(
+                            record, self.y_channel, sample_y
+                        )
+                    )
+                )
             if x_ranges and y_ranges:
                 pooled = (
-                    (min(r[0] for r in x_ranges), max(r[1] for r in x_ranges)),
-                    (min(r[0] for r in y_ranges), max(r[1] for r in y_ranges)),
+                    self._clamp_axis_bounds(
+                        self.x_channel,
+                        (
+                            min(r[0] for r in x_ranges),
+                            max(r[1] for r in x_ranges),
+                        ),
+                    ),
+                    self._clamp_axis_bounds(
+                        self.y_channel,
+                        (
+                            min(r[0] for r in y_ranges),
+                            max(r[1] for r in y_ranges),
+                        ),
+                    ),
                 )
                 self._pooled_bounds_cache[cache_key] = pooled
                 return pooled
 
-        return bounds(x), bounds(y)
+        return (
+            self._clamp_axis_bounds(
+                self.x_channel,
+                bounds(self._bounds_values(self.record, self.x_channel, x)),
+            ),
+            self._clamp_axis_bounds(
+                self.y_channel,
+                bounds(self._bounds_values(self.record, self.y_channel, y)),
+            ),
+        )
 
     def _render_events(self) -> None:
         if len(self._x) == 0:

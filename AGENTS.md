@@ -25,6 +25,10 @@
 - Gate geometry is stored in **transformed channel coordinates**; gate dimensions use
   PnN channel labels. Event flow is raw → compensation → per-channel transform → gate.
   `load_sample_file()` auto-applies FCS `$SPILLOVER` unless disabled.
+- Sample duplicate detection uses `os.path.abspath`/`normcase`, never `Path.resolve()`:
+  resolving every loaded path on Seafile/network folders takes tens of seconds.
+- Auto-range ignores negative FSC/SSC/time values for linear scatter/time channels.
+  Corrupt FCS files can otherwise drag shared root axes to extreme negative values.
 - `.cytodesk` is a zip containing `project.json`, not a GatingML file.
 - README UI details can lag behind code; verify behavior in code.
 
