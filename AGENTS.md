@@ -71,7 +71,11 @@
   not build.
 - Actions are pinned to Node 24 versions (`checkout@v7`, `upload-artifact@v7`,
   `download-artifact@v8`, `setup-uv@v10.3.3`, `action-gh-release@v3`); do not downgrade.
-- Bump both `pyproject.toml` and `src/cytodesk/__init__.py` before creating a release tag.
+- Bump `pyproject.toml`, `src/cytodesk/__init__.py`, `uv.lock`, and README before
+  creating a release tag.
+- Create annotated tags whose message is a short user-facing summary vs the previous
+  tag. The release job uses the tag annotation as the GitHub Release body; it does not
+  use `generate_release_notes`.
 - Keep FlowKit as a PyPI dependency; do not reintroduce `[tool.uv.sources]` path/editable
   configuration.
 - Packages are unsigned: Windows SmartScreen and macOS Gatekeeper warnings are expected,

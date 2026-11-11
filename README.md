@@ -255,6 +255,8 @@ uv run pyinstaller packaging/cytodesk.spec --noconfirm --clean
 - Linux：`dist/CytoDesk/CytoDesk`
 
 推送 `0.3.0` 或 `v0.3.0` 标签会触发 `.github/workflows/build-desktop.yml` 自动构建并发布 GitHub Release。
+Release 正文来自 annotated tag 的 message，并自动附带与上个 tag 的对比链接；
+请在 tag message 中写清本版本相比上个 tag 的变化。
 普通 `main` 分支提交不会自动构建；需要在 Actions 中手动运行。
 详细说明见 `packaging/README.md`。
 

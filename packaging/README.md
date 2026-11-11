@@ -50,10 +50,19 @@ CI 中同样通过 PyPI 安装，无需额外 checkout FlowKit。
 工作流只在以下情况触发：
 
 - 手动触发：Actions → **Build desktop packages with PyInstaller** → Run workflow
-- 推送 `0.3.0` 或 `v0.3.0` 标签时自动构建并创建 GitHub Release：
+- 推送 `0.3.0` 或 `v0.3.0` 标签时自动构建并创建 GitHub Release。
+- Release 正文取自 annotated tag 的 message；请在 tag message 中写清相比上个 tag 的变化。
+  工作流还会自动追加对比链接。
 
 ```bash
-git tag 0.3.0
+git tag -a 0.3.0 -F - <<'EOF'
+CytoDesk 0.3.0
+
+相比 0.2.0：
+- 新增十字四象限门工具
+- 荧光通道坐标轴固定显示 10 的整数次方刻度
+- 门树选择联动定义视图
+EOF
 git push origin 0.3.0
 ```
 
