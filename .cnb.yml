@@ -1,0 +1,106 @@
+# CNB (cnb.cool) pipeline.
+#
+# CNB runs Linux containers, so it builds the Linux x64 package here.
+# Windows x64 and macOS arm64 packaging remain in .github/workflows/build-desktop.yml,
+# because PyInstaller cannot cross-compile those platforms from Linux.
+
+.linux-pipeline: &linux-pipeline
+  runner:
+    tags: cnb:arch:amd64
+    cpus: 2
+  docker:
+    build:
+      dockerfile: packaging/cnb.Dockerfile
+    volumes:
+      - /root/.cache/uv
+      - /FlowKit-master
+  env:
+    UV_DEFAULT_INDEX: https://pypi.org/simple
+    QT_QPA_PLATFORM: offscreen
+
+.install: &install
+  name: install-dependencies
+  script: |
+    set -eu
+    uv sync --frozen --group dev --group build --python 3.12
+
+.test: &test
+  name: run-tests
+  script: |
+    set -eu
+    if [ ! -d /FlowKit-master/data ]; then
+      rm -rf /FlowKit-master
+      git clone --depth 1 https://github.com/whitews/FlowKit.git /FlowKit-master
+    fi
+    uv run --frozen --no-sync pytest -q
+
+.build: &build
+  name: build-linux-package
+  script: |
+    set -eu
+    uv run --frozen --no-sync pyinstaller packaging/cytodesk.spec --noconfirm --clean
+    dist/CytoDesk/CytoDesk --version
+    tar -czf dist/CytoDesk-linux-x64.tar.gz -C dist CytoDesk
+    ls -lh dist/CytoDesk-linux-x64.tar.gz
+
+.release-body: &release-body
+  name: write-release-body
+  script: |
+    set -eu
+    {
+      if [ -n "${CNB_TAG_MESSAGE:-}" ]; then
+        printf '%s\n' "${CNB_TAG_MESSAGE}"
+      else
+        printf '%s\n' "${CNB_COMMIT_MESSAGE}"
+      fi
+      printf '\n---\n\n构建记录: %s\n' "${CNB_BUILD_WEB_URL}"
+    } > release-body.md
+    cat release-body.md
+
+main:
+  push:
+    - <<: *linux-pipeline
+      name: linux-build
+      stages:
+        - *install
+        - *test
+        - *build
+        - name: upload-commit-artifact
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - "./dist/CytoDesk-linux-x64.tar.gz"
+  pull_request:
+    - <<: *linux-pipeline
+      name: linux-pr-check
+      stages:
+        - *install
+        - *test
+
+$:
+  push:
+    - <<: *linux-pipeline
+      name: linux-check
+      stages:
+        - *install
+        - *test
+  tag_push:
+    - <<: *linux-pipeline
+      name: linux-release
+      label:
+        type: RELEASE
+      stages:
+        - *install
+        - *test
+        - *build
+        - *release-body
+        - name: create-release
+          type: git:release
+          options:
+            descriptionFromFile: release-body.md
+            latest: true
+        - name: upload-release-asset
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - "./dist/CytoDesk-linux-x64.tar.gz"

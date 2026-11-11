@@ -65,8 +65,12 @@
 
 ## Packaging / release
 
-- CI matrix: Windows x64, macOS arm64 (`macos-latest`), Ubuntu 22.04 x64. macOS Intel
-  is intentionally not built.
+- GitHub CI matrix: Windows x64, macOS arm64 (`macos-latest`), Ubuntu 22.04 x64.
+  macOS Intel is intentionally not built.
+- `.cnb.yml` is the CNB pipeline. It builds **Linux x64 only** using
+  `packaging/cnb.Dockerfile`; Windows/macOS still require GitHub Actions because
+  PyInstaller cannot cross-compile. CNB tag releases read `CNB_TAG_MESSAGE` and upload
+  the Linux archive via `cnbcool/attachments`.
 - Workflow triggers only on tags `0.*` / `v*` and manual dispatch; pushing `main` does
   not build.
 - Actions are pinned to Node 24 versions (`checkout@v7`, `upload-artifact@v7`,

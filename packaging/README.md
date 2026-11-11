@@ -76,6 +76,23 @@ git push origin 0.3.0
 
 当前不构建 macOS Intel（x64）版本。
 
+## CNB 流水线
+
+仓库根目录的 `.cnb.yml` 提供 CNB（cnb.cool）流水线：
+
+- `main` push：安装依赖、运行测试、构建 Linux x64 包，并作为 commit 附件上传
+- Pull Request：安装依赖并运行测试
+- 其他分支 push：安装依赖并运行测试
+- tag push：运行测试、构建 Linux x64 包、按 tag message 创建 Release，
+  并上传 `CytoDesk-linux-x64.tar.gz`
+
+CNB 使用 Linux 容器，因此只构建 Linux 包；Windows x64 与 macOS arm64 仍由
+GitHub Actions 构建，因为 PyInstaller 不能从 Linux 交叉编译这两个平台。
+
+CNB 构建环境由 `packaging/cnb.Dockerfile` 定义，包含 Python 3.12、uv 和
+PySide6/PyInstaller 所需的 Qt/X11 运行库。测试所需的 FlowKit 示例数据会缓存在
+`/FlowKit-master` 数据卷中。
+
 ### Linux 包说明
 
 Linux 包在 Ubuntu 22.04 上构建，目标为 x86_64：
