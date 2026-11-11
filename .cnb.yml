@@ -29,7 +29,10 @@
   script: |
     set -eu
     if [ ! -d /FlowKit-master/data ]; then
-      rm -rf /FlowKit-master
+      mkdir -p /FlowKit-master
+      # /FlowKit-master is a mounted volume; clear its contents instead of
+      # removing the mount point itself.
+      find /FlowKit-master -mindepth 1 -maxdepth 1 -exec rm -rf {} +
       git clone --depth 1 https://github.com/whitews/FlowKit.git /FlowKit-master
     fi
     uv run --frozen --no-sync pytest -q
